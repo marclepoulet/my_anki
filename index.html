@@ -1,0 +1,1178 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Anki">
+<meta name="theme-color" content="#4f46e5">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<title>Anki</title>
+<style>
+:root {
+  --bg: #f2f2f7; --surface: #ffffff; --text: #111827; --muted: #6b7280; --line: #e5e7eb;
+  --accent: #4f46e5; --accent-fg: #ffffff; --accent-soft: #eef2ff;
+  --again: #dc2626; --hard: #d97706; --good: #16a34a; --easy: #2563eb;
+  --ok-soft: #dcfce7; --bad-soft: #fee2e2;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000; --surface: #1c1c1e; --text: #f3f4f6; --muted: #9ca3af; --line: #2c2c2e;
+    --accent: #818cf8; --accent-fg: #0b0b12; --accent-soft: #23234a;
+    --again: #f87171; --hard: #fbbf24; --good: #4ade80; --easy: #60a5fa;
+    --ok-soft: #14361f; --bad-soft: #3f1515;
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px; line-height: 1.4;
+  touch-action: manipulation; user-select: none; -webkit-user-select: none;
+  overscroll-behavior: none; -webkit-text-size-adjust: 100%;
+}
+input, textarea, select { user-select: text; -webkit-user-select: text; font: inherit; font-size: 16px; color: var(--text); }
+button { font: inherit; color: inherit; touch-action: manipulation; cursor: pointer; }
+#app { display: flex; flex-direction: column; height: 100%; }
+
+.top {
+  display: flex; align-items: center; gap: 8px; min-height: 44px;
+  padding: calc(env(safe-area-inset-top) + 12px) calc(env(safe-area-inset-right) + 16px) 8px calc(env(safe-area-inset-left) + 16px);
+}
+.top h1 { flex: 1; margin: 0; font-size: 28px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top .link { font-size: 17px; }
+main {
+  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 4px calc(env(safe-area-inset-right) + 16px) 24px calc(env(safe-area-inset-left) + 16px);
+}
+.tabs {
+  display: flex; background: var(--surface); border-top: 1px solid var(--line);
+  padding: 4px calc(env(safe-area-inset-right) + 4px) calc(env(safe-area-inset-bottom) + 4px) calc(env(safe-area-inset-left) + 4px);
+}
+.tabs button {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  border: 0; background: none; padding: 6px 0; font-size: 11px; color: var(--muted);
+}
+.tabs button[aria-current="page"] { color: var(--accent); }
+.tabs svg { width: 24px; height: 24px; }
+.hidden { display: none !important; }
+
+.panel { background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 12px; }
+.section-title { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 18px 4px 6px; }
+.list { background: var(--surface); border-radius: 14px; overflow: hidden; margin-bottom: 12px; }
+.row {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 13px 16px; border: 0; background: none; border-bottom: 1px solid var(--line);
+}
+.row:last-child { border-bottom: 0; }
+.row .grow { flex: 1; min-width: 0; }
+.row .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .sub { color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chev { color: var(--muted); font-size: 20px; }
+.pill { font-size: 13px; padding: 2px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; white-space: nowrap; }
+.muted { color: var(--muted); }
+.small { font-size: 14px; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 44px; padding: 10px 16px; border-radius: 12px; border: 0;
+  background: var(--accent-soft); color: var(--accent); font-weight: 600;
+}
+.btn.primary { background: var(--accent); color: var(--accent-fg); }
+.btn.danger { background: var(--bad-soft); color: var(--again); }
+.btn.block { width: 100%; }
+.btn:disabled { opacity: .45; }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.btn-row .btn { flex: 1 1 40%; }
+.link { border: 0; background: none; color: var(--accent); padding: 8px 4px; min-height: 44px; }
+.bold { font-weight: 700; }
+
+.big { font-size: 56px; font-weight: 800; line-height: 1; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.grid .panel { margin: 0; }
+.stat-num { font-size: 26px; font-weight: 700; }
+.bar { height: 10px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 10px; }
+.bar > div { height: 100%; background: var(--accent); border-radius: 999px; }
+.chart { display: flex; align-items: flex-end; gap: 4px; height: 110px; margin-top: 10px; }
+.chart .col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
+.chart .fill { width: 100%; background: var(--accent); border-radius: 4px 4px 0 0; min-height: 2px; }
+.chart .lbl { font-size: 10px; color: var(--muted); }
+.chart .val { font-size: 10px; color: var(--muted); }
+
+.search { width: 100%; padding: 11px 14px; border-radius: 12px; border: 0; background: var(--surface); margin-bottom: 12px; }
+
+/* Review & quiz */
+.flash {
+  background: var(--surface); border-radius: 18px; padding: 28px 20px; min-height: 260px;
+  display: flex; flex-direction: column; justify-content: center; text-align: center; margin-bottom: 16px;
+}
+.flash .q { font-size: 26px; font-weight: 600; white-space: pre-wrap; word-break: break-word; }
+.flash .a { font-size: 22px; white-space: pre-wrap; word-break: break-word; }
+.flash .notes { font-size: 16px; color: var(--muted); white-space: pre-wrap; margin-top: 10px; }
+.flash hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; width: 100%; }
+.flash .crumb { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+.answers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.answers button { border: 0; border-radius: 12px; padding: 10px 4px; min-height: 64px; color: #fff; font-weight: 700; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.answers small { font-weight: 500; opacity: .9; font-size: 12px; }
+.r1 { background: var(--again); } .r2 { background: var(--hard); } .r3 { background: var(--good); } .r4 { background: var(--easy); }
+@media (prefers-color-scheme: dark) { .answers button { color: #0b0b12; } }
+.choices { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.choice { border: 2px solid var(--line); background: var(--surface); border-radius: 14px; padding: 14px 16px; text-align: left; min-height: 52px; white-space: pre-wrap; word-break: break-word; }
+.choice.ok { border-color: var(--good); background: var(--ok-soft); }
+.choice.bad { border-color: var(--again); background: var(--bad-soft); }
+
+/* Sheets & toast */
+.backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; z-index: 10; }
+.sheet {
+  width: 100%; max-height: 88vh; overflow-y: auto; background: var(--bg); border-radius: 16px 16px 0 0;
+  padding: 8px calc(env(safe-area-inset-right) + 16px) calc(env(safe-area-inset-bottom) + 16px) calc(env(safe-area-inset-left) + 16px);
+}
+.sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.field { display: block; margin-bottom: 12px; }
+.field span { display: block; font-size: 13px; color: var(--muted); margin: 0 4px 4px; }
+.field input, .field textarea, .field select {
+  width: 100%; padding: 11px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); resize: vertical;
+}
+.sheet .btn { margin-top: 8px; }
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 84px);
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; z-index: 20; max-width: 90%; text-align: center; font-size: 15px;
+}
+.empty { text-align: center; color: var(--muted); padding: 32px 16px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="top" id="top"></header>
+  <main id="main"></main>
+  <nav class="tabs" id="tabs">
+    <button data-tab="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Accueil</button>
+    <button data-tab="library"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="6" width="14" height="14" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/></svg>Cartes</button>
+    <button data-tab="quiz"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17.5v.01"/></svg>Quiz</button>
+    <button data-tab="stats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 20V11M12 20V4M19 20v-6"/></svg>Stats</button>
+    <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Réglages</button>
+  </nav>
+</div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   0. Utilities
+   ============================================================ */
+const DAY = 86400000;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const startOfDay = (t = Date.now()) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+const dayKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); };
+const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const norm = (s) => String(s ?? '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const plural = (n, one, many) => n + ' ' + (n > 1 ? many : one);
+
+function fmtInterval(days) {
+  if (days < 30) return days + ' j';
+  if (days < 365) return Math.round(days / 30) + ' mois';
+  return (days / 365).toFixed(1).replace('.', ',') + ' an';
+}
+function dueLabel(card) {
+  if (!card.lastReview) return 'Nouvelle';
+  const diff = card.dueDate - Date.now();
+  if (diff <= 0) return 'À réviser';
+  return 'Dans ' + fmtInterval(Math.max(1, Math.ceil(diff / DAY)));
+}
+let toastTimer = null;
+function toast(msg) {
+  document.querySelectorAll('.toast').forEach((t) => t.remove());
+  const t = document.createElement('div');
+  t.className = 'toast'; t.textContent = msg;
+  document.body.appendChild(t);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.remove(), 2600);
+}
+
+/* ============================================================
+   1. IndexedDB Initialization & Migration
+   ============================================================ */
+const DB_NAME = 'AnkiLocalDB';
+const DB_VERSION = 1;
+const DEFAULT_SETTINGS = { dailyGoal: 20, newPerDay: 20 };
+let db = null;
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open(DB_NAME, DB_VERSION);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      const make = (name, indexes, keyPath = 'id') => {
+        if (d.objectStoreNames.contains(name)) return;
+        const store = d.createObjectStore(name, keyPath === 'id' ? { keyPath: 'id', autoIncrement: true } : { keyPath });
+        indexes.forEach((i) => store.createIndex(i, i, { unique: false }));
+      };
+      make('subjects', []);
+      make('themes', ['subjectId']);
+      make('cards', ['dueDate', 'themeId']);
+      make('reviews', ['createdAt', 'cardId']);
+      make('settings', [], 'key');
+    };
+    r.onsuccess = () => {
+      db = r.result;
+      db.onversionchange = () => { db.close(); location.reload(); };
+      resolve(db);
+    };
+    r.onerror = () => reject(r.error);
+    r.onblocked = () => reject(new Error('Base de données bloquée par une autre fenêtre.'));
+  });
+}
+
+/* Runs `body(tx, out)` in one transaction; resolves with out.value once committed (oncomplete). */
+function tx(stores, mode, body) {
+  return new Promise((resolve, reject) => {
+    let t;
+    try { t = db.transaction(stores, mode); } catch (e) { reject(e); return; }
+    const out = { value: undefined };
+    t.oncomplete = () => resolve(out.value);
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error || new Error('Transaction annulée'));
+    try { body(t, out); } catch (e) { try { t.abort(); } catch (_) { /* already finished */ } reject(e); }
+  });
+}
+function onReq(request, ok) {
+  request.onsuccess = () => { if (ok) ok(request.result); };
+  request.onerror = () => console.error('IndexedDB request failed', request.error);
+  return request;
+}
+
+const getAll = (store, index, range) => tx(store, 'readonly', (t, out) => {
+  const s = t.objectStore(store);
+  onReq((index ? s.index(index) : s).getAll(range), (v) => { out.value = v; });
+});
+const getOne = (store, id) => tx(store, 'readonly', (t, out) => onReq(t.objectStore(store).get(id), (v) => { out.value = v; }));
+const putOne = (store, obj) => tx(store, 'readwrite', (t, out) => onReq(t.objectStore(store).put(obj), (k) => { out.value = k; }));
+
+async function getSettings() {
+  const rows = await getAll('settings');
+  const s = { ...DEFAULT_SETTINGS };
+  rows.forEach((r) => { s[r.key] = r.value; });
+  return s;
+}
+const setSetting = (key, value) => putOne('settings', { key, value });
+
+async function loadLibrary() {
+  const [subjects, themes, cards] = await Promise.all([getAll('subjects'), getAll('themes'), getAll('cards')]);
+  subjects.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+  themes.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+  const subjectById = new Map(subjects.map((s) => [s.id, s]));
+  const themeById = new Map(themes.map((t) => [t.id, t]));
+  return { subjects, themes, cards, subjectById, themeById };
+}
+
+function newCard(themeId, front, back, notes) {
+  const now = Date.now();
+  return { themeId, front, back, notes: notes || '', interval: 0, repetitions: 0, easeFactor: 2.5, dueDate: now, createdAt: now, lastReview: null, lapses: 0 };
+}
+function resetProgress(card) {
+  return { ...card, interval: 0, repetitions: 0, easeFactor: 2.5, dueDate: Date.now(), lastReview: null, lapses: 0 };
+}
+
+function deleteCardsOfTheme(t, themeId) {
+  const cards = t.objectStore('cards');
+  onReq(cards.index('themeId').getAllKeys(themeId), (keys) => keys.forEach((k) => onReq(cards.delete(k))));
+}
+const deleteTheme = (themeId) => tx(['themes', 'cards'], 'readwrite', (t) => {
+  onReq(t.objectStore('themes').delete(themeId));
+  deleteCardsOfTheme(t, themeId);
+});
+const deleteSubject = (subjectId) => tx(['subjects', 'themes', 'cards'], 'readwrite', (t) => {
+  onReq(t.objectStore('subjects').delete(subjectId));
+  const themes = t.objectStore('themes');
+  onReq(themes.index('subjectId').getAllKeys(subjectId), (keys) => keys.forEach((k) => {
+    onReq(themes.delete(k));
+    deleteCardsOfTheme(t, k);
+  }));
+});
+const deleteCard = (id) => tx('cards', 'readwrite', (t) => onReq(t.objectStore('cards').delete(id)));
+
+/* ============================================================
+   2. Review Queue Management
+   ============================================================ */
+function scopeFilter(scope, themes) {
+  if (!scope) return () => true;
+  if (scope.themeId) return (c) => c.themeId === scope.themeId;
+  const subjOf = new Map(themes.map((t) => [t.id, t.subjectId]));
+  return (c) => subjOf.get(c.themeId) === scope.subjectId;
+}
+
+/* Due learned cards first (oldest due first), then new cards up to the daily new-card limit. */
+async function buildQueue(scope) {
+  const [due, themes, settings, today] = await Promise.all([
+    getAll('cards', 'dueDate', IDBKeyRange.upperBound(Date.now())),
+    getAll('themes'),
+    getSettings(),
+    getAll('reviews', 'createdAt', IDBKeyRange.lowerBound(startOfDay())),
+  ]);
+  const cards = due.filter(scopeFilter(scope, themes));
+  const learned = cards.filter((c) => c.lastReview).sort((a, b) => a.dueDate - b.dueDate);
+  const newToday = today.filter((r) => r.kind === 'review' && r.wasNew).length;
+  const fresh = cards.filter((c) => !c.lastReview)
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .slice(0, Math.max(0, settings.newPerDay - newToday));
+  return { queue: learned.concat(fresh), learned: learned.length, fresh: fresh.length };
+}
+
+/* ============================================================
+   3. SM-2 Logic
+   ============================================================ */
+const RATINGS = [
+  { q: 1, label: 'À revoir' },
+  { q: 2, label: 'Difficile' },
+  { q: 3, label: 'Bon' },
+  { q: 4, label: 'Facile' },
+];
+const EASY_BONUS = 1.3;
+const HARD_FACTOR = 1.2;
+
+function sm2(card, q) {
+  let ef = card.easeFactor + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
+  if (ef < 1.3) ef = 1.3;
+  let interval;
+  let repetitions = card.repetitions;
+  if (q === 1) {
+    interval = 1;
+    repetitions = 0;
+  } else {
+    if (repetitions === 0) interval = 1;
+    else if (repetitions === 1) interval = 6;
+    else interval = Math.round(card.interval * (q === 2 ? HARD_FACTOR : ef));
+    if (q === 4) interval = Math.max(interval + 1, Math.round(interval * EASY_BONUS)); // Easy always beats Good
+    interval = Math.max(1, interval);
+    repetitions += 1;
+  }
+  return { interval, repetitions, easeFactor: Math.round(ef * 100) / 100, dueDate: Date.now() + interval * DAY };
+}
+
+/* ============================================================
+   4. DOM Handlers & Modal Controllers
+   ============================================================ */
+const state = {
+  tab: 'home',
+  lib: { subjectId: null, themeId: null, search: '' },
+  review: null, // { scope, label, done, current, remaining, revealed }
+  quiz: null,   // { cfg, questions, i, picked, answers, finished }
+};
+let renderToken = 0;
+
+function setHeader(title, { back, actions = [] } = {}) {
+  const top = $('#top');
+  top.innerHTML =
+    (back ? `<button class="link" data-h="back">‹ ${esc(back.label || 'Retour')}</button>` : '') +
+    `<h1>${esc(title)}</h1>` +
+    actions.map((a, i) => `<button class="link bold" data-h="${i}" aria-label="${esc(a.aria || a.label)}">${esc(a.label)}</button>`).join('');
+  top.onclick = (e) => {
+    const b = e.target.closest('[data-h]');
+    if (!b) return;
+    if (b.dataset.h === 'back') back.fn(); else actions[+b.dataset.h].fn();
+  };
+  top.querySelector('h1').style.fontSize = back ? '20px' : '';
+}
+function setMain(html, handlers = {}) {
+  const main = $('#main');
+  main.innerHTML = html;
+  main.onclick = (e) => {
+    const el = e.target.closest('[data-a]');
+    if (el && handlers[el.dataset.a]) handlers[el.dataset.a](el.dataset, el);
+  };
+  return main;
+}
+function showTabs(show) {
+  $('#tabs').classList.toggle('hidden', !show);
+  document.querySelectorAll('#tabs button').forEach((b) => {
+    if (b.dataset.tab === state.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+}
+
+async function render() {
+  const token = ++renderToken;
+  const guard = () => token === renderToken;
+  try {
+    if (state.review) { showTabs(false); await viewReview(guard); return; }
+    if (state.quiz && state.quiz.questions) { showTabs(false); await viewQuizSession(guard); return; }
+    showTabs(true);
+    const views = { home: viewHome, library: viewLibrary, quiz: viewQuizSetup, stats: viewStats, settings: viewSettings };
+    await views[state.tab](guard);
+  } catch (e) {
+    console.error(e);
+    toast('Erreur : ' + (e && e.message ? e.message : e));
+  }
+}
+
+/* ---------- Generic sheet (form modal) ---------- */
+function sheet({ title, fields = [], submitLabel = 'Enregistrer', extra = [], text = '' }) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'backdrop';
+    const fieldHTML = (f) => {
+      let input;
+      if (f.type === 'textarea') input = `<textarea name="${f.name}" rows="${f.rows || 3}">${esc(f.value)}</textarea>`;
+      else if (f.type === 'select') input = `<select name="${f.name}">${f.options.map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(f.value) ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
+      else input = `<input name="${f.name}" type="${f.type || 'text'}" value="${esc(f.value)}" autocomplete="off"${f.type === 'number' ? ' inputmode="numeric" min="0"' : ''}>`;
+      return `<label class="field"><span>${esc(f.label)}</span>${input}</label>`;
+    };
+    wrap.innerHTML = `<form class="sheet" novalidate>
+      <div class="sheet-head"><button type="button" class="link" data-x>Annuler</button><strong>${esc(title)}</strong><button class="link bold" type="submit">${esc(submitLabel)}</button></div>
+      ${text ? `<p class="muted small">${esc(text)}</p>` : ''}
+      ${fields.map(fieldHTML).join('')}
+      ${extra.map((x, i) => `<button type="button" class="btn block ${x.danger ? 'danger' : ''}" data-e="${i}">${esc(x.label)}</button>`).join('')}
+    </form>`;
+    const form = wrap.querySelector('form');
+    const close = (v) => { wrap.remove(); resolve(v); };
+    const collect = () => {
+      const fd = new FormData(form);
+      const values = {};
+      fields.forEach((f) => { values[f.name] = String(fd.get(f.name) ?? '').trim(); });
+      const missing = fields.find((f) => f.required && !values[f.name]);
+      if (missing) { toast(`« ${missing.label} » est obligatoire.`); return null; }
+      return values;
+    };
+    wrap.addEventListener('click', (e) => {
+      if (e.target === wrap || e.target.closest('[data-x]')) { close(null); return; }
+      const b = e.target.closest('[data-e]');
+      if (!b) return;
+      const x = extra[+b.dataset.e];
+      if (x.submit) { const values = collect(); if (values) close({ values, action: x.action }); }
+      else close({ action: x.action });
+    });
+    form.onsubmit = (e) => { e.preventDefault(); const values = collect(); if (values) close({ values, action: 'save' }); };
+    document.body.appendChild(wrap);
+    const first = form.querySelector('input, textarea');
+    if (first) setTimeout(() => first.focus(), 60);
+  });
+}
+
+async function editSubject(subject) {
+  const r = await sheet({
+    title: subject ? 'Renommer le sujet' : 'Nouveau sujet',
+    fields: [{ name: 'name', label: 'Nom', value: subject ? subject.name : '', required: true }],
+  });
+  if (!r) return null;
+  const now = Date.now();
+  return putOne('subjects', subject ? { ...subject, name: r.values.name, updatedAt: now } : { name: r.values.name, createdAt: now, updatedAt: now });
+}
+async function editTheme(subjectId, theme) {
+  const r = await sheet({
+    title: theme ? 'Renommer le thème' : 'Nouveau thème',
+    fields: [{ name: 'name', label: 'Nom', value: theme ? theme.name : '', required: true }],
+  });
+  if (!r) return null;
+  const now = Date.now();
+  return putOne('themes', theme ? { ...theme, name: r.values.name, updatedAt: now } : { subjectId, name: r.values.name, createdAt: now, updatedAt: now });
+}
+
+/* Create (card = null, themeId given) or edit a card. Loops on "Enregistrer + suivante". */
+async function editCard(card, themeId) {
+  const lib = await loadLibrary();
+  const themeOptions = lib.themes.map((t) => ({ value: t.id, label: (lib.subjectById.get(t.subjectId)?.name || '?') + ' › ' + t.name }));
+  for (;;) {
+    const r = await sheet({
+      title: card ? 'Modifier la carte' : 'Nouvelle carte',
+      fields: [
+        { name: 'front', label: 'Recto (question)', type: 'textarea', value: card ? card.front : '', required: true },
+        { name: 'back', label: 'Verso (réponse)', type: 'textarea', value: card ? card.back : '', required: true },
+        { name: 'notes', label: 'Notes (facultatif)', type: 'textarea', rows: 2, value: card ? card.notes : '' },
+        { name: 'themeId', label: 'Thème', type: 'select', value: card ? card.themeId : themeId, options: themeOptions },
+      ],
+      extra: card
+        ? [{ label: 'Réinitialiser la progression', action: 'reset' }, { label: 'Supprimer la carte', action: 'delete', danger: true }]
+        : [{ label: 'Enregistrer + suivante', action: 'next', submit: true }],
+    });
+    if (!r) return;
+    if (r.action === 'delete') {
+      if (confirm('Supprimer cette carte ?')) { await deleteCard(card.id); toast('Carte supprimée'); }
+      return;
+    }
+    if (r.action === 'reset') { await putOne('cards', resetProgress(card)); toast('Progression réinitialisée'); return; }
+    const v = r.values;
+    const tid = Number(v.themeId);
+    if (card) await putOne('cards', { ...card, front: v.front, back: v.back, notes: v.notes, themeId: tid });
+    else await putOne('cards', newCard(tid, v.front, v.back, v.notes));
+    toast('Carte enregistrée');
+    if (r.action !== 'next') return;
+    themeId = tid;
+    await render();
+  }
+}
+
+/* ---------- Home ---------- */
+async function viewHome(guard) {
+  const [{ queue, learned, fresh }, settings, today, lib, reviews] = await Promise.all([
+    buildQueue(null), getSettings(), getAll('reviews', 'createdAt', IDBKeyRange.lowerBound(startOfDay())), loadLibrary(), getAll('reviews'),
+  ]);
+  if (!guard()) return;
+  setHeader('Aujourd’hui');
+  if (!lib.cards.length) {
+    setMain(`<div class="panel empty">
+        <p><strong>Aucune carte pour l’instant.</strong></p>
+        <p>Crée un sujet et un thème dans l’onglet Cartes, ou importe un fichier CSV dans Réglages.</p>
+        <div class="btn-row"><button class="btn primary" data-a="lib">Créer des cartes</button><button class="btn" data-a="settings">Importer</button></div>
+      </div>`, { lib: () => go('library'), settings: () => go('settings') });
+    return;
+  }
+  const goal = settings.dailyGoal;
+  const pct = goal ? Math.min(100, Math.round((today.length / goal) * 100)) : 100;
+  const now = Date.now();
+  const subjOf = new Map(lib.themes.map((t) => [t.id, t.subjectId]));
+  const dueBySubject = new Map();
+  lib.cards.forEach((c) => { if (c.dueDate <= now) { const s = subjOf.get(c.themeId); dueBySubject.set(s, (dueBySubject.get(s) || 0) + 1); } });
+  setMain(`
+    <div class="panel">
+      <div class="big">${queue.length}</div>
+      <div class="muted">${queue.length ? `${plural(learned, 'carte à revoir', 'cartes à revoir')} · ${plural(fresh, 'nouvelle', 'nouvelles')}` : 'Rien à réviser, bravo !'}</div>
+      <button class="btn primary block" style="margin-top:16px" data-a="start" ${queue.length ? '' : 'disabled'}>Commencer la révision</button>
+    </div>
+    <div class="grid">
+      <div class="panel"><div class="muted small">Objectif du jour</div><div class="stat-num">${today.length}/${goal}</div><div class="bar"><div style="width:${pct}%"></div></div></div>
+      <div class="panel"><div class="muted small">Série</div><div class="stat-num">${plural(streakOf(reviews), 'jour', 'jours')}</div></div>
+    </div>
+    <div class="section-title">Par sujet</div>
+    <div class="list">${lib.subjects.map((s) => `
+      <button class="row" data-a="subject" data-id="${s.id}">
+        <div class="grow"><div class="title">${esc(s.name)}</div></div>
+        ${dueBySubject.get(s.id) ? `<span class="pill">${dueBySubject.get(s.id)}</span>` : '<span class="muted small">à jour</span>'}
+        <span class="chev">›</span>
+      </button>`).join('')}</div>`, {
+    start: () => startReview(null, 'Révision'),
+    subject: (d) => { const s = lib.subjectById.get(+d.id); startReview({ subjectId: s.id }, s.name); },
+  });
+}
+
+function streakOf(reviews) {
+  const days = new Set(reviews.map((r) => dayKey(r.createdAt)));
+  const d = new Date(); d.setHours(12, 0, 0, 0);
+  if (!days.has(dayKey(d.getTime()))) d.setDate(d.getDate() - 1);
+  let n = 0;
+  while (days.has(dayKey(d.getTime()))) { n++; d.setDate(d.getDate() - 1); }
+  return n;
+}
+
+/* ---------- Review session ---------- */
+async function startReview(scope, label) {
+  state.review = { scope, label, done: 0, revealed: false, current: null, remaining: 0 };
+  await render();
+}
+async function viewReview(guard) {
+  const rv = state.review;
+  const [{ queue }, lib] = await Promise.all([buildQueue(rv.scope), loadLibrary()]);
+  if (!guard()) return;
+  rv.current = queue[0] || null;
+  rv.remaining = queue.length;
+  setHeader(rv.label, { back: { label: 'Terminer', fn: endReview }, actions: rv.current ? [{ label: String(rv.remaining), aria: 'Cartes restantes', fn: () => {} }] : [] });
+  if (!rv.current) {
+    setMain(`<div class="panel empty"><div class="big">✓</div><p><strong>Session terminée</strong></p><p>${plural(rv.done, 'carte révisée', 'cartes révisées')}.</p>
+      <button class="btn primary block" data-a="end">Retour</button></div>`, { end: endReview });
+    return;
+  }
+  const c = rv.current;
+  const theme = lib.themeById.get(c.themeId);
+  const crumb = theme ? (lib.subjectById.get(theme.subjectId)?.name || '') + ' › ' + theme.name : '';
+  const answerHTML = rv.revealed
+    ? `<hr><div class="a">${esc(c.back)}</div>${c.notes ? `<div class="notes">${esc(c.notes)}</div>` : ''}`
+    : '';
+  const controls = rv.revealed
+    ? `<div class="answers">${RATINGS.map((r) => `<button class="r${r.q}" data-a="rate" data-q="${r.q}">${r.label}<small>${fmtInterval(sm2(c, r.q).interval)}</small></button>`).join('')}</div>`
+    : `<button class="btn primary block" data-a="reveal" style="min-height:64px">Afficher la réponse</button>`;
+  setMain(`<div class="flash" data-a="reveal"><div class="crumb">${esc(crumb)}${c.lastReview ? '' : ' · nouvelle'}</div><div class="q">${esc(c.front)}</div>${answerHTML}</div>${controls}
+    <div style="text-align:center;margin-top:12px"><button class="link small" data-a="edit">Modifier la carte</button></div>`, {
+    reveal: () => { if (!rv.revealed) { rv.revealed = true; render(); } },
+    rate: (d) => rateCard(+d.q),
+    edit: async () => { await editCard(c); render(); },
+  });
+}
+async function rateCard(q) {
+  const rv = state.review;
+  const card = rv.current;
+  if (!card) return;
+  rv.current = null; // ignore double taps while writing
+  const now = Date.now();
+  const wasNew = !card.lastReview;
+  const updated = { ...card, ...sm2(card, q), lastReview: now, lapses: (card.lapses || 0) + (q === 1 ? 1 : 0) };
+  await tx(['cards', 'reviews'], 'readwrite', (t) => {
+    onReq(t.objectStore('cards').put(updated));
+    onReq(t.objectStore('reviews').add({ cardId: card.id, kind: 'review', rating: q, correct: q > 1, wasNew, createdAt: now }));
+  });
+  rv.done++;
+  rv.revealed = false;
+  await render(); // queue is rebuilt from IndexedDB
+}
+function endReview() { state.review = null; render(); }
+
+/* ---------- Library ---------- */
+async function viewLibrary(guard) {
+  const lib = await loadLibrary();
+  if (!guard()) return;
+  const L = state.lib;
+  const subject = L.subjectId ? lib.subjectById.get(L.subjectId) : null;
+  const theme = L.themeId ? lib.themeById.get(L.themeId) : null;
+  if (L.subjectId && !subject) { L.subjectId = null; L.themeId = null; return render(); }
+  if (L.themeId && !theme) { L.themeId = null; return render(); }
+  if (theme) return libTheme(lib, subject, theme);
+  if (subject) return libSubject(lib, subject);
+  return libRoot(lib);
+}
+
+function cardRow(c, lib, withPath) {
+  const t = lib.themeById.get(c.themeId);
+  const path = withPath && t ? (lib.subjectById.get(t.subjectId)?.name || '') + ' › ' + t.name + ' · ' : '';
+  return `<button class="row" data-a="card" data-id="${c.id}">
+    <div class="grow"><div class="title">${esc(c.front)}</div><div class="sub">${esc(path)}${esc(c.back)}</div></div>
+    <span class="muted small">${dueLabel(c)}</span></button>`;
+}
+const openCard = (lib) => async (d) => { await editCard(lib.cards.find((c) => c.id === +d.id)); render(); };
+
+function libRoot(lib) {
+  setHeader('Cartes', { actions: [{ label: '+', aria: 'Nouveau sujet', fn: async () => { if (await editSubject()) render(); } }] });
+  const countBy = (key, arr) => arr.reduce((m, x) => m.set(x[key], (m.get(x[key]) || 0) + 1), new Map());
+  const themesPer = countBy('subjectId', lib.themes);
+  const subjOf = new Map(lib.themes.map((t) => [t.id, t.subjectId]));
+  const cardsPer = new Map();
+  lib.cards.forEach((c) => { const s = subjOf.get(c.themeId); cardsPer.set(s, (cardsPer.get(s) || 0) + 1); });
+  const main = setMain(`
+    <input class="search" type="search" placeholder="Rechercher une carte" value="${esc(state.lib.search)}" id="search">
+    <div id="results"></div>`, { subject: (d) => { state.lib.subjectId = +d.id; render(); }, card: openCard(lib), add: async () => { if (await editSubject()) render(); } });
+  const results = main.querySelector('#results');
+  const paint = () => {
+    const q = norm(state.lib.search);
+    if (q) {
+      const hits = lib.cards.filter((c) => norm(c.front + ' ' + c.back + ' ' + c.notes).includes(q)).slice(0, 100);
+      results.innerHTML = hits.length ? `<div class="list">${hits.map((c) => cardRow(c, lib, true)).join('')}</div>` : '<div class="empty">Aucun résultat</div>';
+      return;
+    }
+    results.innerHTML = lib.subjects.length
+      ? `<div class="list">${lib.subjects.map((s) => `<button class="row" data-a="subject" data-id="${s.id}">
+          <div class="grow"><div class="title">${esc(s.name)}</div><div class="sub">${plural(themesPer.get(s.id) || 0, 'thème', 'thèmes')} · ${plural(cardsPer.get(s.id) || 0, 'carte', 'cartes')}</div></div><span class="chev">›</span></button>`).join('')}</div>`
+      : `<div class="panel empty"><p>Organise tes cartes en <strong>sujets</strong> → <strong>thèmes</strong> → <strong>cartes</strong>.</p><button class="btn primary" data-a="add">Créer un sujet</button></div>`;
+  };
+  main.querySelector('#search').oninput = (e) => { state.lib.search = e.target.value; paint(); };
+  paint();
+}
+
+function libSubject(lib, subject) {
+  const themes = lib.themes.filter((t) => t.subjectId === subject.id);
+  const cardsPer = lib.cards.reduce((m, c) => m.set(c.themeId, (m.get(c.themeId) || 0) + 1), new Map());
+  setHeader(subject.name, {
+    back: { label: 'Cartes', fn: () => { state.lib.subjectId = null; render(); } },
+    actions: [{ label: '+', aria: 'Nouveau thème', fn: async () => { if (await editTheme(subject.id)) render(); } }],
+  });
+  setMain(`
+    <div class="btn-row">
+      <button class="btn primary" data-a="review">Réviser</button>
+      <button class="btn" data-a="quiz">Quiz</button>
+      <button class="btn" data-a="rename">Renommer</button>
+      <button class="btn danger" data-a="delete">Supprimer</button>
+    </div>
+    <div class="section-title">Thèmes</div>
+    ${themes.length ? `<div class="list">${themes.map((t) => `<button class="row" data-a="theme" data-id="${t.id}">
+        <div class="grow"><div class="title">${esc(t.name)}</div><div class="sub">${plural(cardsPer.get(t.id) || 0, 'carte', 'cartes')}</div></div><span class="chev">›</span></button>`).join('')}</div>`
+      : `<div class="panel empty"><p>Aucun thème dans ce sujet.</p><button class="btn primary" data-a="add">Créer un thème</button></div>`}`, {
+    theme: (d) => { state.lib.themeId = +d.id; render(); },
+    add: async () => { if (await editTheme(subject.id)) render(); },
+    review: () => startReview({ subjectId: subject.id }, subject.name),
+    quiz: () => { state.quizScope = 's:' + subject.id; go('quiz'); },
+    rename: async () => { if (await editSubject(subject)) render(); },
+    delete: async () => {
+      if (!confirm(`Supprimer « ${subject.name} », ses thèmes et toutes ses cartes ?`)) return;
+      await deleteSubject(subject.id); state.lib.subjectId = null; toast('Sujet supprimé'); render();
+    },
+  });
+}
+
+function libTheme(lib, subject, theme) {
+  const cards = lib.cards.filter((c) => c.themeId === theme.id).sort((a, b) => a.createdAt - b.createdAt);
+  const add = async () => { await editCard(null, theme.id); render(); };
+  setHeader(theme.name, { back: { label: subject.name, fn: () => { state.lib.themeId = null; render(); } }, actions: [{ label: '+', aria: 'Nouvelle carte', fn: add }] });
+  setMain(`
+    <div class="btn-row">
+      <button class="btn primary" data-a="review">Réviser</button>
+      <button class="btn" data-a="quiz">Quiz</button>
+      <button class="btn" data-a="rename">Renommer</button>
+      <button class="btn danger" data-a="delete">Supprimer</button>
+    </div>
+    <div class="section-title">${plural(cards.length, 'carte', 'cartes')}</div>
+    ${cards.length ? `<div class="list">${cards.map((c) => cardRow(c, lib, false)).join('')}</div>`
+      : `<div class="panel empty"><p>Aucune carte dans ce thème.</p><button class="btn primary" data-a="add">Ajouter une carte</button></div>`}`, {
+    card: openCard(lib),
+    add,
+    review: () => startReview({ themeId: theme.id }, theme.name),
+    quiz: () => { state.quizScope = 't:' + theme.id; go('quiz'); },
+    rename: async () => { if (await editTheme(subject.id, theme)) render(); },
+    delete: async () => {
+      if (!confirm(`Supprimer le thème « ${theme.name} » et ses ${cards.length} cartes ?`)) return;
+      await deleteTheme(theme.id); state.lib.themeId = null; toast('Thème supprimé'); render();
+    },
+  });
+}
+
+/* ---------- Quiz (multiple choice, no effect on SM-2 scheduling) ---------- */
+async function viewQuizSetup(guard) {
+  const lib = await loadLibrary();
+  if (!guard()) return;
+  setHeader('Quiz');
+  if (lib.cards.length < 2) {
+    setMain('<div class="panel empty"><p>Il faut au moins 2 cartes pour lancer un quiz.</p></div>');
+    return;
+  }
+  const scope = state.quizScope || 'all';
+  const groups = lib.subjects.map((s) => `<optgroup label="${esc(s.name)}"><option value="s:${s.id}"${scope === 's:' + s.id ? ' selected' : ''}>${esc(s.name)} (tout)</option>${
+    lib.themes.filter((t) => t.subjectId === s.id).map((t) => `<option value="t:${t.id}"${scope === 't:' + t.id ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}</optgroup>`).join('');
+  setMain(`<div class="panel">
+      <label class="field"><span>Cartes</span><select id="qz-scope"><option value="all">Toutes les cartes</option>${groups}</select></label>
+      <label class="field"><span>Nombre de questions</span><select id="qz-count"><option>10</option><option>20</option><option>50</option></select></label>
+      <label class="field"><span>Sens</span><select id="qz-dir"><option value="front">Recto → Verso</option><option value="back">Verso → Recto</option></select></label>
+      <p class="muted small">Le quiz propose 4 réponses par question. Il n’influence pas la planification des révisions.</p>
+      <button class="btn primary block" data-a="start">Lancer le quiz</button>
+    </div>`, {
+    start: () => {
+      const cfg = { scope: $('#qz-scope').value, count: +$('#qz-count').value, dir: $('#qz-dir').value };
+      state.quizScope = cfg.scope;
+      startQuiz(cfg, lib);
+    },
+  });
+}
+
+function startQuiz(cfg, lib, onlyIds) {
+  const subjOf = new Map(lib.themes.map((t) => [t.id, t.subjectId]));
+  const [kind, idStr] = cfg.scope.split(':');
+  const id = Number(idStr);
+  let pool = lib.cards.filter((c) => kind === 't' ? c.themeId === id : kind === 's' ? subjOf.get(c.themeId) === id : true);
+  if (onlyIds) pool = pool.filter((c) => onlyIds.includes(c.id));
+  const ask = (c) => (cfg.dir === 'back' ? c.back : c.front);
+  const answer = (c) => (cfg.dir === 'back' ? c.front : c.back);
+  const questions = [];
+  for (const card of shuffle(pool.slice()).slice(0, cfg.count)) {
+    const expected = answer(card);
+    const seen = new Set([norm(expected)]);
+    const distractors = [];
+    const tiers = [
+      lib.cards.filter((c) => c.themeId === card.themeId),
+      lib.cards.filter((c) => subjOf.get(c.themeId) === subjOf.get(card.themeId)),
+      lib.cards,
+    ];
+    for (const tier of tiers) {
+      for (const c of shuffle(tier.slice())) {
+        if (distractors.length >= 3) break;
+        const a = answer(c);
+        if (!seen.has(norm(a))) { seen.add(norm(a)); distractors.push(a); }
+      }
+    }
+    if (!distractors.length) continue;
+    questions.push({ cardId: card.id, prompt: ask(card), expected, choices: shuffle([expected, ...distractors]) });
+  }
+  if (!questions.length) { toast('Pas assez de réponses différentes pour un quiz.'); return; }
+  state.quiz = { cfg, questions, i: 0, picked: null, answers: [], finished: false };
+  render();
+}
+
+async function viewQuizSession(guard) {
+  if (!guard()) return;
+  const qz = state.quiz;
+  const quit = () => { if (qz.finished || !qz.answers.length || confirm('Quitter le quiz ?')) { state.quiz = null; render(); } };
+  if (qz.finished) {
+    const good = qz.answers.filter((a) => a.correct).length;
+    const wrong = qz.answers.filter((a) => !a.correct);
+    setHeader('Résultat', { back: { label: 'Quiz', fn: quit } });
+    setMain(`<div class="panel" style="text-align:center"><div class="big">${Math.round((good / qz.answers.length) * 100)} %</div>
+        <p class="muted">${good} bonne${good > 1 ? 's' : ''} réponse${good > 1 ? 's' : ''} sur ${qz.answers.length}</p></div>
+      ${wrong.length ? `<div class="section-title">À retravailler</div><div class="list">${wrong.map((a) => `<div class="row"><div class="grow"><div class="title">${esc(a.q.prompt)}</div><div class="sub">${esc(a.q.expected)}</div></div></div>`).join('')}</div>
+        <button class="btn primary block" data-a="retry">Rejouer les erreurs</button>` : ''}
+      <button class="btn block" style="margin-top:8px" data-a="done">Terminer</button>`, {
+      retry: async () => startQuiz(qz.cfg, await loadLibrary(), wrong.map((a) => a.q.cardId)),
+      done: quit,
+    });
+    return;
+  }
+  const q = qz.questions[qz.i];
+  const picked = qz.picked;
+  setHeader(`Question ${qz.i + 1}/${qz.questions.length}`, { back: { label: 'Quitter', fn: quit } });
+  setMain(`<div class="flash" style="min-height:160px"><div class="q">${esc(q.prompt)}</div></div>
+    <div class="choices">${q.choices.map((c, i) => {
+      let cls = '';
+      if (picked !== null) { if (c === q.expected) cls = 'ok'; else if (i === picked) cls = 'bad'; }
+      return `<button class="choice ${cls}" data-a="pick" data-i="${i}" ${picked !== null ? 'disabled' : ''}>${esc(c)}</button>`;
+    }).join('')}</div>
+    ${picked !== null ? `<button class="btn primary block" data-a="next">${qz.i + 1 < qz.questions.length ? 'Suivant' : 'Voir le résultat'}</button>` : ''}`, {
+    pick: async (d) => {
+      if (qz.picked !== null) return;
+      qz.picked = +d.i;
+      const correct = q.choices[qz.picked] === q.expected;
+      qz.answers.push({ q, correct });
+      await putOne('reviews', { cardId: q.cardId, kind: 'quiz', rating: null, correct, wasNew: false, createdAt: Date.now() });
+      render();
+    },
+    next: () => {
+      qz.picked = null;
+      if (qz.i + 1 < qz.questions.length) qz.i++; else qz.finished = true;
+      render();
+    },
+  });
+}
+
+/* ---------- Statistics ---------- */
+async function viewStats(guard) {
+  const [lib, reviews, settings] = await Promise.all([loadLibrary(), getAll('reviews'), getSettings()]);
+  if (!guard()) return;
+  setHeader('Statistiques');
+  const now = Date.now();
+  const cards = lib.cards;
+  const due = cards.filter((c) => c.dueDate <= now).length;
+  const fresh = cards.filter((c) => !c.lastReview).length;
+  const mastered = cards.filter((c) => c.interval >= 21).length;
+  const today = reviews.filter((r) => r.createdAt >= startOfDay());
+  const week = reviews.filter((r) => r.createdAt >= startOfDay() - 6 * DAY);
+  const rate = week.length ? Math.round((week.filter((r) => r.correct).length / week.length) * 100) + ' %' : '—';
+
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i);
+    const from = d.getTime(); const e = new Date(d); e.setDate(e.getDate() + 1);
+    days.push({ label: String(d.getDate()), n: reviews.filter((r) => r.createdAt >= from && r.createdAt < e.getTime()).length });
+  }
+  const forecast = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + i);
+    const e = new Date(d); e.setDate(e.getDate() + 1);
+    forecast.push({
+      label: i === 0 ? 'auj.' : d.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', ''),
+      n: cards.filter((c) => c.lastReview && (i === 0 ? c.dueDate < e.getTime() : c.dueDate >= d.getTime() && c.dueDate < e.getTime())).length,
+    });
+  }
+  const chart = (data) => {
+    const max = Math.max(1, ...data.map((x) => x.n));
+    return `<div class="chart">${data.map((x) => `<div class="col"><span class="val">${x.n || ''}</span><div class="fill" style="height:${Math.round((x.n / max) * 80)}%"></div><span class="lbl">${esc(x.label)}</span></div>`).join('')}</div>`;
+  };
+  const difficult = cards.filter((c) => (c.lapses || 0) >= 2 || (c.lastReview && c.easeFactor <= 1.5))
+    .sort((a, b) => (b.lapses || 0) - (a.lapses || 0) || a.easeFactor - b.easeFactor).slice(0, 10);
+
+  setMain(`
+    <div class="grid">
+      <div class="panel"><div class="muted small">Cartes</div><div class="stat-num">${cards.length}</div></div>
+      <div class="panel"><div class="muted small">À réviser</div><div class="stat-num">${due}</div></div>
+      <div class="panel"><div class="muted small">Nouvelles</div><div class="stat-num">${fresh}</div></div>
+      <div class="panel"><div class="muted small">Maîtrisées (≥ 21 j)</div><div class="stat-num">${mastered}</div></div>
+      <div class="panel"><div class="muted small">Aujourd’hui</div><div class="stat-num">${today.length}/${settings.dailyGoal}</div></div>
+      <div class="panel"><div class="muted small">Réussite 7 jours</div><div class="stat-num">${rate}</div></div>
+    </div>
+    <div class="panel"><div class="muted small">Série actuelle : <strong>${plural(streakOf(reviews), 'jour', 'jours')}</strong></div></div>
+    <div class="panel"><div class="muted small">Réponses — 14 derniers jours</div>${chart(days)}</div>
+    <div class="panel"><div class="muted small">Révisions prévues — 7 prochains jours</div>${chart(forecast)}</div>
+    <div class="section-title">Cartes difficiles</div>
+    ${difficult.length ? `<div class="list">${difficult.map((c) => cardRow(c, lib, true)).join('')}</div>` : '<div class="panel empty">Aucune carte difficile pour l’instant.</div>'}`, {
+    card: openCard(lib),
+  });
+}
+
+/* ---------- Settings ---------- */
+async function viewSettings(guard) {
+  const [settings, lib] = await Promise.all([getSettings(), loadLibrary()]);
+  let persisted = null;
+  try { persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null; } catch (_) { /* unsupported */ }
+  if (!guard()) return;
+  setHeader('Réglages');
+  const main = setMain(`
+    <div class="section-title">Étude</div>
+    <div class="panel">
+      <label class="field"><span>Objectif quotidien (réponses)</span><input type="number" inputmode="numeric" min="1" id="goal" value="${settings.dailyGoal}"></label>
+      <label class="field" style="margin:0"><span>Nouvelles cartes par jour</span><input type="number" inputmode="numeric" min="0" id="newPerDay" value="${settings.newPerDay}"></label>
+    </div>
+    <div class="section-title">Sauvegarde</div>
+    <div class="list">
+      <button class="row" data-a="exportJson"><div class="grow"><div class="title">Exporter une sauvegarde</div><div class="sub">Fichier JSON complet (cartes, progression, historique)</div></div></button>
+      <button class="row" data-a="importJson"><div class="grow"><div class="title">Importer une sauvegarde</div><div class="sub">Ajoute le contenu du fichier aux données actuelles</div></div></button>
+    </div>
+    <div class="section-title">CSV</div>
+    <div class="list">
+      <button class="row" data-a="importCsv"><div class="grow"><div class="title">Importer un CSV</div><div class="sub">Colonnes : subject, theme, front, back, notes</div></div></button>
+      <button class="row" data-a="exportCsv"><div class="grow"><div class="title">Exporter en CSV</div><div class="sub">${plural(lib.cards.length, 'carte', 'cartes')}</div></div></button>
+    </div>
+    <div class="section-title">Données</div>
+    <div class="panel small muted">
+      ${plural(lib.subjects.length, 'sujet', 'sujets')} · ${plural(lib.themes.length, 'thème', 'thèmes')} · ${plural(lib.cards.length, 'carte', 'cartes')}<br>
+      Stockage local ${persisted === true ? 'protégé contre le nettoyage automatique' : persisted === false ? 'non protégé : exporte une sauvegarde régulièrement' : 'IndexedDB'}.
+    </div>
+    <button class="btn danger block" data-a="wipe">Effacer toutes les données</button>`, {
+    exportJson: exportBackup,
+    importJson: importBackup,
+    importCsv: importCSVFile,
+    exportCsv: exportCSV,
+    wipe: wipeAll,
+  });
+  const saveNum = (key, min) => async (e) => {
+    const v = Math.max(min, Math.floor(Number(e.target.value) || 0));
+    e.target.value = v;
+    await setSetting(key, v);
+    toast('Enregistré');
+  };
+  main.querySelector('#goal').onchange = saveNum('dailyGoal', 1);
+  main.querySelector('#newPerDay').onchange = saveNum('newPerDay', 0);
+}
+
+async function wipeAll() {
+  if (!confirm('Effacer TOUTES les cartes, sujets et statistiques ?')) return;
+  if (!confirm('Vraiment ? Cette action est définitive. Pense à exporter une sauvegarde avant.')) return;
+  await tx(['subjects', 'themes', 'cards', 'reviews'], 'readwrite', (t) => {
+    ['subjects', 'themes', 'cards', 'reviews'].forEach((s) => onReq(t.objectStore(s).clear()));
+  });
+  state.lib = { subjectId: null, themeId: null, search: '' };
+  toast('Données effacées');
+  render();
+}
+
+function go(tab) {
+  state.tab = tab;
+  if (tab !== 'quiz') state.quiz = null;
+  render();
+}
+
+/* ============================================================
+   5. Backup / Restore Logic
+   ============================================================ */
+function stamp() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+async function saveFile(name, text, type) {
+  const blob = new Blob([text], { type });
+  try {
+    const file = new File([blob], name, { type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+}
+function pickTextFile(accept) {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = accept;
+    input.onchange = () => {
+      const file = input.files && input.files[0];
+      if (!file) { resolve(null); return; }
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => { toast('Lecture du fichier impossible'); resolve(null); };
+      reader.readAsText(file);
+    };
+    input.click();
+  });
+}
+
+async function exportBackup() {
+  const [subjects, themes, cards, reviews, settings] = await Promise.all(['subjects', 'themes', 'cards', 'reviews', 'settings'].map((s) => getAll(s)));
+  const data = { app: 'anki-local', version: 1, exportedAt: new Date().toISOString(), subjects, themes, cards, reviews, settings };
+  await saveFile(`anki_backup_${stamp()}.json`, JSON.stringify(data), 'application/json');
+}
+
+/* Adds every item of `items` to `store` (ids stripped), then calls done(oldId -> newId map). */
+function addAll(t, store, items, prepare, done) {
+  const map = new Map();
+  let left = items.length;
+  if (!left) { done(map); return; }
+  const finish = () => { if (--left === 0) done(map); };
+  for (const item of items) {
+    const obj = prepare({ ...item });
+    if (!obj) { finish(); continue; }
+    const oldId = obj.id;
+    delete obj.id;
+    onReq(t.objectStore(store).add(obj), (newId) => { map.set(oldId, newId); finish(); });
+  }
+}
+
+async function importBackup() {
+  const text = await pickTextFile('application/json,.json');
+  if (text == null) return;
+  let data;
+  try { data = JSON.parse(text); } catch (_) { toast('Fichier JSON invalide'); return; }
+  const n = Array.isArray(data) ? data.length : data && Array.isArray(data.cards) ? data.cards.length : 0;
+  if (!n) { toast('Ce fichier n’est pas une sauvegarde valide'); return; }
+  if (!confirm(`Importer ${plural(n, 'carte', 'cartes')} ? Elles seront ajoutées aux données existantes.`)) return;
+  const added = await importBackupData(data);
+  toast(`${plural(added, 'carte importée', 'cartes importées')}`);
+  render();
+}
+
+/* Merges a backup object into the database in one atomic transaction (ids are re-mapped). */
+async function importBackupData(data) {
+  const now = Date.now();
+  // Legacy format: a plain array of flashcards without subjects/themes.
+  if (Array.isArray(data)) {
+    data = { subjects: [{ id: 1, name: 'Importé' }], themes: [{ id: 1, subjectId: 1, name: 'Général' }], cards: data.map((c) => ({ ...c, themeId: 1 })), reviews: [] };
+  }
+  const subjects = Array.isArray(data.subjects) ? data.subjects : [];
+  const themes = Array.isArray(data.themes) ? data.themes : [];
+  const reviews = Array.isArray(data.reviews) ? data.reviews : [];
+  let added = 0;
+  await tx(['subjects', 'themes', 'cards', 'reviews'], 'readwrite', (t) => {
+    addAll(t, 'subjects', subjects, (s) => (s.name ? { ...s, createdAt: s.createdAt || now, updatedAt: now } : null), (subjMap) => {
+      addAll(t, 'themes', themes, (th) => (subjMap.has(th.subjectId) && th.name ? { ...th, subjectId: subjMap.get(th.subjectId), createdAt: th.createdAt || now, updatedAt: now } : null), (themeMap) => {
+        addAll(t, 'cards', data.cards, (c) => {
+          if (!themeMap.has(c.themeId) || !c.front || !c.back) return null;
+          added++;
+          return {
+            ...newCard(themeMap.get(c.themeId), String(c.front), String(c.back), c.notes ? String(c.notes) : ''),
+            id: c.id,
+            interval: Number(c.interval) || 0,
+            repetitions: Number(c.repetitions) || 0,
+            easeFactor: Math.max(1.3, Number(c.easeFactor) || 2.5),
+            dueDate: Number(c.dueDate) || now,
+            createdAt: Number(c.createdAt) || now,
+            lastReview: c.lastReview ? Number(c.lastReview) : (Number(c.repetitions) > 0 ? now : null),
+            lapses: Number(c.lapses) || 0,
+          };
+        }, (cardMap) => {
+          addAll(t, 'reviews', reviews, (r) => (cardMap.has(r.cardId) ? { ...r, cardId: cardMap.get(r.cardId) } : null), () => {});
+        });
+      });
+    });
+  });
+  return added;
+}
+
+/* ---------- CSV ---------- */
+function parseCSV(text) {
+  text = text.replace(/^﻿/, '');
+  const firstLine = text.split(/\r?\n/, 1)[0] || '';
+  const sep = [',', ';', '\t'].map((s) => [s, firstLine.split(s).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
+      else field += ch;
+    } else if (ch === '"' && field === '') inQuotes = true;
+    else if (ch === sep) { row.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); rows.push(row); row = []; field = '';
+    } else field += ch;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((c) => c.trim() !== ''));
+}
+const CSV_ALIASES = {
+  subject: ['subject', 'sujet', 'matiere', 'deck'],
+  theme: ['theme', 'chapitre', 'chapter', 'topic'],
+  front: ['front', 'recto', 'question', 'avant'],
+  back: ['back', 'verso', 'reponse', 'answer', 'arriere'],
+  notes: ['notes', 'note', 'extra'],
+};
+const CSV_EXTRA = ['kana', 'romaji', 'kanji', 'translation', 'example'];
+
+function csvToRecords(rows) {
+  const header = rows[0].map(norm);
+  const col = {};
+  for (const [key, names] of Object.entries(CSV_ALIASES)) col[key] = header.findIndex((h) => names.includes(h));
+  const extraCols = CSV_EXTRA.map((n) => header.indexOf(n)).filter((i) => i >= 0);
+  let body = rows.slice(1);
+  if (col.front < 0 || col.back < 0) { // no recognizable header: front, back, notes
+    body = rows; col.subject = -1; col.theme = -1; col.front = 0; col.back = 1; col.notes = 2;
+  }
+  const get = (r, i) => (i >= 0 && i < r.length ? r[i].trim() : '');
+  return body.map((r) => {
+    const extras = extraCols.map((i) => get(r, i)).filter((v) => v && v !== get(r, col.front) && v !== get(r, col.back));
+    return {
+      subject: get(r, col.subject) || 'Importé',
+      theme: get(r, col.theme) || 'Général',
+      front: get(r, col.front),
+      back: get(r, col.back),
+      notes: [get(r, col.notes), ...extras].filter(Boolean).join(' · '),
+    };
+  }).filter((r) => r.front && r.back);
+}
+
+async function importCSVFile() {
+  const text = await pickTextFile('.csv,text/csv,text/plain');
+  if (text == null) return;
+  const rows = parseCSV(text);
+  if (!rows.length) { toast('Fichier CSV vide'); return; }
+  const records = csvToRecords(rows);
+  if (!records.length) { toast('Aucune carte valide (recto + verso requis)'); return; }
+  if (!confirm(`Importer ${plural(records.length, 'carte', 'cartes')} ?`)) return;
+  await importRecords(records);
+  toast(`${plural(records.length, 'carte importée', 'cartes importées')}`);
+  render();
+}
+
+/* Inserts CSV records, creating subjects/themes by name when missing, in one transaction. */
+async function importRecords(records) {
+  const lib = await loadLibrary();
+  const subjects = new Map(lib.subjects.map((s) => [norm(s.name), s.id]));
+  const themes = new Map(lib.themes.map((t) => [t.subjectId + '|' + norm(t.name), t.id]));
+  const now = Date.now();
+  await tx(['subjects', 'themes', 'cards'], 'readwrite', (t) => {
+    const ensureSubject = (name, cb) => {
+      const key = norm(name);
+      if (subjects.has(key)) { cb(subjects.get(key)); return; }
+      onReq(t.objectStore('subjects').add({ name, createdAt: now, updatedAt: now }), (id) => { subjects.set(key, id); cb(id); });
+    };
+    const ensureTheme = (subjectId, name, cb) => {
+      const key = subjectId + '|' + norm(name);
+      if (themes.has(key)) { cb(themes.get(key)); return; }
+      onReq(t.objectStore('themes').add({ subjectId, name, createdAt: now, updatedAt: now }), (id) => { themes.set(key, id); cb(id); });
+    };
+    const step = (i) => {
+      if (i >= records.length) return;
+      const r = records[i];
+      ensureSubject(r.subject, (sid) => ensureTheme(sid, r.theme, (tid) => {
+        onReq(t.objectStore('cards').add({ ...newCard(tid, r.front, r.back, r.notes), createdAt: now + i }), () => step(i + 1));
+      }));
+    };
+    step(0);
+  });
+}
+
+async function exportCSV() {
+  const lib = await loadLibrary();
+  const q = (v) => (/[",;\n\r]/.test(v) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v));
+  const lines = ['subject,theme,front,back,notes'];
+  for (const c of lib.cards) {
+    const t = lib.themeById.get(c.themeId);
+    const s = t ? lib.subjectById.get(t.subjectId) : null;
+    lines.push([s ? s.name : '', t ? t.name : '', c.front, c.back, c.notes || ''].map(q).join(','));
+  }
+  await saveFile(`anki_cartes_${stamp()}.csv`, '﻿' + lines.join('\n'), 'text/csv');
+}
+
+/* ============================================================
+   Boot
+   ============================================================ */
+document.getElementById('tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-tab]');
+  if (!b) return;
+  if (b.dataset.tab === state.tab && b.dataset.tab === 'library') state.lib = { subjectId: null, themeId: null, search: '' };
+  go(b.dataset.tab);
+});
+
+(async function boot() {
+  try {
+    await openDB();
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  } catch (e) {
+    $('#main').innerHTML = `<div class="panel empty">Impossible d’ouvrir la base locale : ${esc(e.message)}</div>`;
+    return;
+  }
+  render();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !state.review && !state.quiz) render(); });
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('SW registration failed', e));
+  }
+})();
+</script>
+</body>
+</html>
