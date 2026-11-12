@@ -218,6 +218,9 @@ function stack(n) {
   return 'box-shadow:' + s.join(',');
 }
 
+// iOS ignores focus() outside a tap: the field becomes focused without a keyboard, and tapping it
+// then does not open the keyboard either. So touch screens never get automatic focus.
+const isTouch = window.matchMedia('(pointer: coarse)').matches;
 /* Text-to-speech (works offline on iOS). Japanese text gets a Japanese voice, everything else French. */
 const canSpeak = 'speechSynthesis' in window;
 function speak(text) {
@@ -588,7 +591,7 @@ function sheet({ title, fields = [], submitLabel = 'Enregistrer', extra = [], te
     form.onsubmit = (e) => { e.preventDefault(); if (!submitLabel) return; const values = collect(); if (values) close({ values, action: 'save' }); };
     document.body.appendChild(wrap);
     const first = form.querySelector('input, textarea');
-    if (first) setTimeout(() => first.focus(), 60);
+    if (first && !isTouch) setTimeout(() => first.focus(), 60);
   });
 }
 
@@ -1191,7 +1194,7 @@ async function viewQuizSession(guard) {
       qz.picked = 0;
       record(typedMatches(typed, q.expected), { typed });
     };
-    main.querySelector('#qz-input').focus();
+    if (!isTouch) main.querySelector('#qz-input').focus();
   }
 }
 /* Typed answer check: ignores case, accents, punctuation and spacing; "a, b / c" accepts any part. */
