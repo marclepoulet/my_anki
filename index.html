@@ -139,7 +139,9 @@ main {
 .heat .l3 { background: var(--accent); opacity: .75; } .heat .l4 { background: var(--accent); }
 .imgpick { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .imgpick img { max-height: 90px; max-width: 120px; border-radius: 4px; }
-.imgpick input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+/* Visually hidden file input: its native button would otherwise overflow invisibly over "Retirer" and catch taps.
+   The surrounding <label> still opens the picker. */
+.imgpick input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
 .flash.flip { animation: flip .32s ease-out; }
 @keyframes flip { from { transform: perspective(900px) rotateX(70deg); opacity: .4; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .flash.flip { animation: none; } }
