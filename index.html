@@ -74,6 +74,7 @@ main {
   padding: 13px 2px; border: 0; background: none; border-bottom: 1px solid var(--line);
 }
 .row .grow { flex: 1; min-width: 0; }
+.row .check { font-size: 22px; color: var(--accent); }
 .row .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .sub { color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chev { color: var(--muted); font-size: 20px; }
@@ -128,6 +129,7 @@ main {
 .flash .crumb { position: absolute; top: 14px; left: 20px; right: 20px; text-align: left; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .flash img { display: block; max-width: 100%; max-height: 220px; margin: 12px auto 0; border-radius: 2px; }
 .flash.swipe { touch-action: pan-y; }
+.cloze { color: var(--accent); background: var(--accent-soft); border-radius: 3px; padding: 0 4px; font-weight: 600; }
 .say { border: 0; background: none; color: var(--muted); min-width: 44px; min-height: 40px; margin: 2px auto 0; display: inline-flex; align-items: center; justify-content: center; }
 .say svg { width: 22px; height: 22px; }
 .center { text-align: center; }
@@ -193,8 +195,17 @@ main {
 const DAY = 86400000;
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const startOfDay = (t = Date.now()) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
-const dayKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); };
+// The study day starts at DAY_START o'clock (setting dayStartHour, default 4 h like Anki): 1 a.m. still counts as yesterday.
+let DAY_START = 4;
+const HOUR = 3600000;
+const startOfDay = (t = Date.now()) => { const d = new Date(t - DAY_START * HOUR); d.setHours(0, 0, 0, 0); return d.getTime() + DAY_START * HOUR; };
+const dayKey = (t) => { const d = new Date(t - DAY_START * HOUR); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); };
+/* Cloze cards: "La capitale est {{Tokyo}}" shows a blank on the question side. */
+const CLOZE = /\{\{(.+?)\}\}/g;
+const hasCloze = (s) => /\{\{.+?\}\}/.test(s || '');
+const clozeHTML = (s, reveal) => esc(s).replace(CLOZE, (_, w) => (reveal ? `<mark class="cloze">${w}</mark>` : '<span class="cloze">[…]</span>'));
+const clozeText = (s, reveal) => String(s).replace(CLOZE, (_, w) => (reveal ? w : '…'));
+const clozeAnswers = (s) => [...String(s).matchAll(CLOZE)].map((m) => m[1]).join(', ');
 const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const norm = (s) => String(s ?? '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const plural = (n, one, many) => n + ' ' + (n > 1 ? many : one);
@@ -271,7 +282,8 @@ function toast(msg) {
    ============================================================ */
 const DB_NAME = 'AnkiLocalDB';
 const DB_VERSION = 1;
-const DEFAULT_SETTINGS = { dailyGoal: 20, newPerDay: 20, lastBackup: 0 };
+const DEFAULT_SETTINGS = { dailyGoal: 20, newPerDay: 20, lastBackup: 0, dayStartHour: 4, autoplay: false };
+const LEECH = 8; // a card failed this many times is suspended so it can be rewritten
 let db = null;
 
 function openDB() {
@@ -329,9 +341,20 @@ async function getSettings() {
   const rows = await getAll('settings');
   const s = { ...DEFAULT_SETTINGS };
   rows.forEach((r) => { s[r.key] = r.value; });
+  DAY_START = s.dayStartHour;
   return s;
 }
-const setSetting = (key, value) => putOne('settings', { key, value });
+const setSetting = (key, value) => { if (key === 'dayStartHour') DAY_START = value; return putOne('settings', { key, value }); };
+
+/* Applies fn to each card in ids (fn returns the new card, or null to delete it), in one transaction. */
+const updateCards = (ids, fn) => tx('cards', 'readwrite', (t) => {
+  const store = t.objectStore('cards');
+  ids.forEach((id) => onReq(store.get(id), (c) => {
+    if (!c) return;
+    const next = fn(c);
+    onReq(next ? store.put(next) : store.delete(id));
+  }));
+});
 
 async function loadLibrary() {
   const [subjects, themes, cards] = await Promise.all([getAll('subjects'), getAll('themes'), getAll('cards')]);
@@ -439,7 +462,8 @@ function sm2(card, q) {
     interval = Math.max(1, interval);
     repetitions += 1;
   }
-  return { interval, repetitions, easeFactor: Math.round(ef * 100) / 100, dueDate: Date.now() + interval * DAY };
+  // Due at the start of the study day, so a card answered at 21 h is ready the next morning, not at 21 h.
+  return { interval, repetitions, easeFactor: Math.round(ef * 100) / 100, dueDate: startOfDay(Date.now() + interval * DAY) };
 }
 
 /* ============================================================
@@ -498,7 +522,8 @@ async function render() {
 }
 
 /* ---------- Generic sheet (form modal) ---------- */
-function sheet({ title, fields = [], submitLabel = 'Enregistrer', extra = [], text = '' }) {
+/* html: trusted markup (already escaped by the caller). check(values): returns an error message or ''. */
+function sheet({ title, fields = [], submitLabel = 'Enregistrer', extra = [], text = '', html = '', check = null }) {
   return new Promise((resolve) => {
     const wrap = document.createElement('div');
     wrap.className = 'backdrop';
@@ -520,8 +545,9 @@ function sheet({ title, fields = [], submitLabel = 'Enregistrer', extra = [], te
       return `<label class="field"><span>${esc(f.label)}</span>${input}</label>`;
     };
     wrap.innerHTML = `<form class="sheet" novalidate>
-      <div class="sheet-head"><button type="button" class="link" data-x>Annuler</button><strong>${esc(title)}</strong><button class="link bold" type="submit">${esc(submitLabel)}</button></div>
+      <div class="sheet-head"><button type="button" class="link" data-x>Annuler</button><strong>${esc(title)}</strong>${submitLabel ? `<button class="link bold" type="submit">${esc(submitLabel)}</button>` : '<span style="width:60px"></span>'}</div>
       ${text ? `<p class="muted small">${esc(text)}</p>` : ''}
+      ${html}
       ${fields.map(fieldHTML).join('')}
       ${extra.map((x, i) => `<button type="button" class="btn block ${x.danger ? 'danger' : ''}" data-e="${i}">${esc(x.label)}</button>`).join('')}
     </form>`;
@@ -543,6 +569,8 @@ function sheet({ title, fields = [], submitLabel = 'Enregistrer', extra = [], te
       fields.forEach((f) => { values[f.name] = f.type === 'image' ? images[f.name] : String(fd.get(f.name) ?? '').trim(); });
       const missing = fields.find((f) => f.required && !values[f.name]);
       if (missing) { toast(`« ${missing.label} » est obligatoire.`); return null; }
+      const err = check && check(values);
+      if (err) { toast(err); return null; }
       return values;
     };
     wrap.addEventListener('click', (e) => {
@@ -555,7 +583,7 @@ function sheet({ title, fields = [], submitLabel = 'Enregistrer', extra = [], te
       if (x.submit) { const values = collect(); if (values) close({ values, action: x.action }); }
       else close({ action: x.action });
     });
-    form.onsubmit = (e) => { e.preventDefault(); const values = collect(); if (values) close({ values, action: 'save' }); };
+    form.onsubmit = (e) => { e.preventDefault(); if (!submitLabel) return; const values = collect(); if (values) close({ values, action: 'save' }); };
     document.body.appendChild(wrap);
     const first = form.querySelector('input, textarea');
     if (first) setTimeout(() => first.focus(), 60);
@@ -592,14 +620,22 @@ async function editTheme(subjectId, theme) {
 
 /* Create (card = null, themeId given) or edit a card. Loops on "Enregistrer + suivante". */
 async function editCard(card, themeId) {
-  const lib = await loadLibrary();
-  const themeOptions = lib.themes.map((t) => ({ value: t.id, label: (lib.subjectById.get(t.subjectId)?.name || '?') + ' › ' + t.name }));
+  const history = card ? await getAll('reviews', 'cardId', card.id) : [];
   for (;;) {
+    const lib = await loadLibrary();
+    const themeOptions = lib.themes.map((t) => ({ value: t.id, label: (lib.subjectById.get(t.subjectId)?.name || '?') + ' › ' + t.name }));
     const r = await sheet({
+      html: card ? cardHistoryHTML(card, history) : '',
+      check: (v) => {
+        if (!v.back && !hasCloze(v.front)) return '« Verso » est obligatoire (sauf pour un texte à trous {{…}}).';
+        const dup = lib.cards.find((c) => c.id !== (card && card.id) && norm(c.front) === norm(v.front));
+        if (dup && !(card && norm(card.front) === norm(v.front)) && !confirm(`Une carte avec ce recto existe déjà (${cardPath(dup, lib)}). L’enregistrer quand même ?`)) return 'Carte non enregistrée';
+        return '';
+      },
       title: card ? 'Modifier la carte' : 'Nouvelle carte',
       fields: [
-        { name: 'front', label: 'Recto (question)', type: 'textarea', value: card ? card.front : '', required: true },
-        { name: 'back', label: 'Verso (réponse)', type: 'textarea', value: card ? card.back : '', required: true },
+        { name: 'front', label: 'Recto (question). Texte à trous : « La capitale est {{Tokyo}} »', type: 'textarea', value: card ? card.front : '', required: true },
+        { name: 'back', label: 'Verso (réponse, facultatif pour un texte à trous)', type: 'textarea', value: card ? card.back : '' },
         { name: 'notes', label: 'Notes (facultatif)', type: 'textarea', rows: 2, value: card ? card.notes : '' },
         { name: 'image', label: 'Image affichée avec le recto (facultatif)', type: 'image', value: card ? card.image : '' },
         { name: 'themeId', label: 'Thème', type: 'select', value: card ? card.themeId : themeId, options: themeOptions },
@@ -632,6 +668,18 @@ async function editCard(card, themeId) {
     themeId = tid;
     await render();
   }
+}
+
+const cardPath = (c, lib) => { const t = lib.themeById.get(c.themeId); return t ? (lib.subjectById.get(t.subjectId)?.name || '') + ' › ' + t.name : ''; };
+const KIND_LABEL = { review: 'révision', free: 'libre', quiz: 'quiz' };
+/* Card progress + last 10 answers, shown in the card editor. */
+function cardHistoryHTML(card, history) {
+  const rating = (r) => (r.rating ? RATINGS.find((x) => x.q === r.rating).label : r.correct ? 'juste' : 'faux');
+  const rows = history.slice().sort((a, b) => b.createdAt - a.createdAt).slice(0, 10).map((r) =>
+    `<div class="row" style="padding:6px 2px"><div class="grow small">${esc(new Date(r.createdAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: '2-digit' }))}, ${KIND_LABEL[r.kind] || ''}</div><span class="small ${r.correct ? '' : 'muted'}">${esc(rating(r))}</span></div>`).join('');
+  return `<div class="panel small">
+    <div>${esc(dueLabel(card))}${card.lastReview ? `, intervalle ${fmtInterval(card.interval)}, facilité ${String(card.easeFactor).replace('.', ',')}` : ''}${card.lapses ? `, ratée ${plural(card.lapses, 'fois', 'fois')}` : ''}.</div>
+    ${rows ? `<div class="list" style="margin:8px 0 0">${rows}</div>` : '<div class="muted">Jamais révisée.</div>'}</div>`;
 }
 
 /* ---------- Home ---------- */
@@ -706,7 +754,7 @@ async function startReview(scope, label, free = false) {
 }
 async function viewReview(guard) {
   const rv = state.review;
-  const [{ queue }, lib] = await Promise.all([rv.free ? { queue: [] } : buildQueue(rv.scope), loadLibrary()]);
+  const [{ queue }, lib, settings] = await Promise.all([rv.free ? { queue: [] } : buildQueue(rv.scope), loadLibrary(), getSettings()]);
   if (!guard()) return;
   const byId = new Map(lib.cards.map((c) => [c.id, c]));
   rv.relearn = rv.relearn.filter((id) => byId.has(id) && !byId.get(id).suspended);
@@ -736,15 +784,26 @@ async function viewReview(guard) {
   const crumb = theme ? (lib.subjectById.get(theme.subjectId)?.name || '') + ' › ' + theme.name : '';
   // Direction is drawn once per showing (card id + answer count), so re-renders keep it stable.
   const key = c.id + ':' + rv.done;
-  if (rv.dirKey !== key) {
+  const firstShow = rv.dirKey !== key;
+  if (firstShow) {
     const d = (theme && theme.direction) || 'front';
     rv.dirKey = key;
     rv.backward = d === 'back' || (d === 'mixed' && Math.random() < 0.5);
   }
-  const qSide = rv.backward ? 'back' : 'front';
-  const aSide = rv.backward ? 'front' : 'back';
-  const face = (side, cls) => `<div class="${cls}">${esc(c[side])}</div>${side === 'front' ? imgHTML(c.image) : ''}${sayBtn(side)}`;
-  const answerHTML = rv.revealed ? `<hr>${face(aSide, 'a')}${c.notes ? `<div class="notes">${esc(c.notes)}</div>` : ''}` : '';
+  const speech = {}; // text read aloud by each speaker button ('q' question, 'a' answer)
+  const face = (side, cls, k) => { speech[k] = c[side]; return `<div class="${cls}">${esc(c[side])}</div>${side === 'front' ? imgHTML(c.image) : ''}${sayBtn(k)}`; };
+  let cardHTML;
+  let answerPart = '';
+  if (hasCloze(c.front)) { // cloze cards always ask the recto; revealing fills the blanks in place
+    speech.q = clozeText(c.front, rv.revealed);
+    cardHTML = `<div class="q">${clozeHTML(c.front, rv.revealed)}</div>${imgHTML(c.image)}${sayBtn('q')}`;
+    if (c.back) answerPart = face('back', 'a', 'a');
+  } else {
+    cardHTML = face(rv.backward ? 'back' : 'front', 'q', 'q');
+    answerPart = face(rv.backward ? 'front' : 'back', 'a', 'a');
+  }
+  if (c.notes) answerPart += `<div class="notes">${esc(c.notes)}</div>`;
+  const answerHTML = rv.revealed && answerPart ? `<hr>${answerPart}` : '';
   const ratings = relearning
     ? [{ q: 1, label: 'À revoir', sub: 'encore' }, { q: 3, label: 'Bon', sub: fmtInterval(Math.max(1, Math.ceil((c.dueDate - Date.now()) / DAY))) }]
     : RATINGS.map((r) => ({ ...r, sub: rv.free ? FREE_HINT[r.q] : fmtInterval(sm2(c, r.q).interval) }));
@@ -755,15 +814,17 @@ async function viewReview(guard) {
   const tag = relearning ? ', à revoir' : c.lastReview ? '' : ', nouvelle';
   const flip = rv.flip;
   rv.flip = false; // animate only on the render right after the tap
-  const main = setMain(`<div class="flash${flip ? ' flip' : ''}${rv.revealed ? ' swipe' : ''}" style="${stack(rv.remaining)}" data-a="reveal"><div class="crumb">${esc(crumb)}${tag}</div>${face(qSide, 'q')}${answerHTML}</div>${controls}
+  const main = setMain(`<div class="flash${flip ? ' flip' : ''}${rv.revealed ? ' swipe' : ''}" style="${stack(rv.remaining)}" data-a="reveal"><div class="crumb">${esc(crumb)}${tag}</div>${cardHTML}${answerHTML}</div>${controls}
     <div class="center" style="margin-top:12px"><button class="link small" data-a="edit">Modifier la carte</button>${undoLink}</div>`, {
     reveal: () => { if (!rv.revealed) { rv.revealed = true; rv.flip = true; render(); } },
     rate: (d) => rateCard(+d.q),
-    say: (d) => speak(c[d.side]),
+    say: (d) => speak(speech[d.side]),
     undo: undoRating,
     edit: async () => { await editCard(c); render(); },
   });
   if (rv.revealed) attachSwipe(main.querySelector('.flash'), (dir) => rateCard(dir < 0 ? 1 : 3));
+  // shortcut: iOS may ignore speech not started by a tap; it works once the user has tapped a speaker button.
+  if (firstShow && settings.autoplay && canSpeak) speak(speech.q);
 }
 /* Horizontal swipe on an element: follows the finger, calls done(-1|1) past 90 px, else snaps back. */
 function attachSwipe(el, done) {
@@ -803,6 +864,8 @@ async function rateCard(q) {
   const updated = relearning ? null
     : free ? { ...card, weight }
     : { ...card, ...sm2(card, q), weight, lastReview: now, lapses: (card.lapses || 0) + (q === 1 ? 1 : 0) };
+  const leech = updated && !free && q === 1 && updated.lapses >= LEECH && !card.suspended;
+  if (leech) updated.suspended = true;
   await tx(['cards', 'reviews'], 'readwrite', (t) => {
     if (updated) onReq(t.objectStore('cards').put(updated));
     onReq(t.objectStore('reviews').add({ cardId: card.id, kind: free ? 'free' : 'review', rating: q, correct: q > 1, wasNew: !free && !relearning && !card.lastReview, createdAt: now }), (id) => { undo.reviewId = id; });
@@ -813,6 +876,7 @@ async function rateCard(q) {
   rv.force = null;
   rv.pick = null;
   rv.lastId = card.id;
+  if (leech) toast(`Carte ratée ${LEECH} fois : suspendue. Reformule-la dans Cartes puis réactive-la.`);
   rv.done++;
   rv.revealed = false;
   await render(); // queue is rebuilt from IndexedDB
@@ -853,7 +917,7 @@ function cardRow(c, lib, withPath) {
   const t = lib.themeById.get(c.themeId);
   const path = withPath && t ? (lib.subjectById.get(t.subjectId)?.name || '') + ' › ' + t.name + ' · ' : '';
   return `<button class="row" data-a="card" data-id="${c.id}">
-    <div class="grow"><div class="title">${esc(c.front)}</div><div class="sub">${esc(path)}${esc(c.back)}</div></div>
+    <div class="grow"><div class="title">${esc(clozeText(c.front, true))}</div><div class="sub">${esc(path)}${esc(c.back)}</div></div>
     <span class="muted small">${dueLabel(c)}</span></button>`;
 }
 const openCard = (lib) => async (d) => { await editCard(lib.cards.find((c) => c.id === +d.id)); render(); };
@@ -920,19 +984,60 @@ function libSubject(lib, subject) {
 function libTheme(lib, subject, theme) {
   const cards = lib.cards.filter((c) => c.themeId === theme.id).sort((a, b) => a.createdAt - b.createdAt);
   const add = async () => { await editCard(null, theme.id); render(); };
-  setHeader(theme.name, { back: { label: subject.name, fn: () => { state.lib.themeId = null; render(); } }, actions: [{ label: '+', aria: 'Nouvelle carte', fn: add }] });
-  setMain(`
-    <div class="btn-row">
+  const sel = state.select && state.select.themeId === theme.id ? state.select.ids : null; // selection mode
+  const leave = () => { state.select = null; state.lib.themeId = null; render(); };
+  setHeader(theme.name, {
+    back: { label: subject.name, fn: leave },
+    actions: sel
+      ? [{ label: 'OK', aria: 'Terminer la sélection', fn: () => { state.select = null; render(); } }]
+      : [{ label: 'Choisir', aria: 'Sélectionner des cartes', fn: () => { state.select = { themeId: theme.id, ids: new Set() }; render(); } }, { label: '+', aria: 'Nouvelle carte', fn: add }],
+  });
+  const done = (msg) => { state.select = null; toast(msg); render(); };
+  const ids = sel ? [...sel] : [];
+  const need = () => { if (!ids.length) toast('Sélectionne d’abord des cartes'); return ids.length > 0; };
+  const actions = sel
+    ? `<div class="btn-row">
+      <button class="btn" data-a="all">${sel.size === cards.length ? 'Aucune' : 'Toutes'}</button>
+      <button class="btn" data-a="move">Déplacer</button>
+      <button class="btn" data-a="suspend">Suspendre</button>
+      <button class="btn" data-a="unsuspend">Réactiver</button>
+      <button class="btn danger" data-a="remove">Supprimer</button>
+    </div>
+    <div class="section-title">${plural(sel.size, 'carte sélectionnée', 'cartes sélectionnées')}</div>`
+    : `<div class="btn-row">
       <button class="btn primary" data-a="review">Réviser</button>
       <button class="btn" data-a="free">Révision libre</button>
       <button class="btn" data-a="quiz">Quiz</button>
       <button class="btn" data-a="rename">Modifier</button>
       <button class="btn danger" data-a="delete">Supprimer</button>
     </div>
-    <div class="section-title">${plural(cards.length, 'carte', 'cartes')}, ${DIRECTIONS.find((d) => d.value === (theme.direction || 'front')).label.toLowerCase()}</div>
-    ${cards.length ? `<div class="list">${cards.map((c) => cardRow(c, lib, false)).join('')}</div>`
+    <div class="section-title">${plural(cards.length, 'carte', 'cartes')}, ${DIRECTIONS.find((d) => d.value === (theme.direction || 'front')).label.toLowerCase()}</div>`;
+  const rows = cards.map((c) => (sel
+    ? cardRow(c, lib, false).replace('data-a="card"', 'data-a="toggle"').replace('<div class="grow">', `<span class="check" aria-hidden="true">${sel.has(c.id) ? '☑' : '☐'}</span><div class="grow">`)
+    : cardRow(c, lib, false))).join('');
+  setMain(`${actions}
+    ${cards.length ? `<div class="list">${rows}</div>`
       : `<div class="panel empty"><p>Aucune carte dans ce thème.</p><button class="btn primary" data-a="add">Ajouter une carte</button></div>`}`, {
     card: openCard(lib),
+    toggle: (d) => { const id = +d.id; if (sel.has(id)) sel.delete(id); else sel.add(id); render(); },
+    all: () => { if (sel.size === cards.length) sel.clear(); else cards.forEach((c) => sel.add(c.id)); render(); },
+    move: async () => {
+      if (!need()) return;
+      const options = lib.themes.filter((t) => t.id !== theme.id).map((t) => ({ value: t.id, label: (lib.subjectById.get(t.subjectId)?.name || '?') + ' › ' + t.name }));
+      if (!options.length) { toast('Crée d’abord un autre thème'); return; }
+      const r = await sheet({ title: 'Déplacer', submitLabel: 'Déplacer', fields: [{ name: 'themeId', label: 'Vers le thème', type: 'select', value: options[0].value, options }] });
+      if (!r) return;
+      const tid = Number(r.values.themeId);
+      await updateCards(ids, (c) => ({ ...c, themeId: tid }));
+      done(plural(ids.length, 'carte déplacée', 'cartes déplacées'));
+    },
+    suspend: async () => { if (!need()) return; await updateCards(ids, (c) => ({ ...c, suspended: true })); done(plural(ids.length, 'carte suspendue', 'cartes suspendues')); },
+    unsuspend: async () => { if (!need()) return; await updateCards(ids, (c) => ({ ...c, suspended: false })); done(plural(ids.length, 'carte réactivée', 'cartes réactivées')); },
+    remove: async () => {
+      if (!need() || !confirm(`Supprimer ${plural(ids.length, 'carte', 'cartes')} ?`)) return;
+      await updateCards(ids, () => null);
+      done(plural(ids.length, 'carte supprimée', 'cartes supprimées'));
+    },
     add,
     review: () => startReview({ themeId: theme.id }, theme.name),
     free: () => startReview({ themeId: theme.id }, theme.name + ', libre', true),
@@ -961,12 +1066,13 @@ async function viewQuizSetup(guard) {
       <label class="field"><span>Cartes</span><select id="qz-scope"><option value="all">Toutes les cartes</option>${groups}</select></label>
       <label class="field"><span>Nombre de questions</span><select id="qz-count"><option>10</option><option>20</option><option>50</option></select></label>
       <label class="field"><span>Sens</span><select id="qz-dir"><option value="front">Recto → Verso</option><option value="back">Verso → Recto</option></select></label>
+      ${canSpeak ? '<label class="field"><span>Question</span><select id="qz-listen"><option value="">Écrite</option><option value="1">À l’écoute (la question est lue, pas affichée)</option></select></label>' : ''}
       <label class="field"><span>Réponse</span><select id="qz-mode"><option value="choice">4 choix</option><option value="type">Taper la réponse</option></select></label>
       <p class="muted small">Le quiz n’influence pas la planification des révisions.</p>
       <button class="btn primary block" data-a="start">Lancer le quiz</button>
     </div>`, {
     start: () => {
-      const cfg = { scope: $('#qz-scope').value, count: +$('#qz-count').value, dir: $('#qz-dir').value, mode: $('#qz-mode').value };
+      const cfg = { scope: $('#qz-scope').value, count: +$('#qz-count').value, dir: $('#qz-dir').value, mode: $('#qz-mode').value, listen: !!($('#qz-listen') && $('#qz-listen').value) };
       state.quizScope = cfg.scope;
       startQuiz(cfg, lib);
     },
@@ -979,8 +1085,9 @@ function startQuiz(cfg, lib, onlyIds) {
   const id = Number(idStr);
   let pool = lib.cards.filter((c) => !c.suspended).filter((c) => kind === 't' ? c.themeId === id : kind === 's' ? subjOf.get(c.themeId) === id : true);
   if (onlyIds) pool = pool.filter((c) => onlyIds.includes(c.id));
-  const ask = (c) => (cfg.dir === 'back' ? c.back : c.front);
-  const answer = (c) => (cfg.dir === 'back' ? c.front : c.back);
+  // Cloze cards always ask the sentence with blanks; the answer is the hidden words.
+  const ask = (c) => (hasCloze(c.front) ? clozeText(c.front, false) : cfg.dir === 'back' ? c.back : c.front);
+  const answer = (c) => (hasCloze(c.front) ? clozeAnswers(c.front) : cfg.dir === 'back' ? c.front : c.back);
   const questions = [];
   for (const card of shuffle(pool.slice()).slice(0, cfg.count)) {
     const expected = answer(card);
@@ -1050,7 +1157,8 @@ async function viewQuizSession(guard) {
     a.review.id = await putOne('reviews', a.review);
     render();
   };
-  const main = setMain(`<div class="flash" style="min-height:160px"><div class="q">${esc(q.prompt)}</div>${sayBtn('prompt')}</div>
+  const hidden = qz.cfg.listen && picked === null; // listening quiz: the text appears only once answered
+  const main = setMain(`<div class="flash" style="min-height:160px">${hidden ? '<div class="notes">Écoute et réponds</div>' : `<div class="q">${esc(q.prompt)}</div>`}${sayBtn('prompt')}</div>
     ${body}
     ${picked !== null ? `<button class="btn primary block" data-a="next">${qz.i + 1 < qz.questions.length ? 'Suivant' : 'Voir le résultat'}</button>` : ''}`, {
     say: () => speak(q.prompt),
@@ -1071,6 +1179,7 @@ async function viewQuizSession(guard) {
       render();
     },
   });
+  if (qz.cfg.listen && qz.spoken !== qz.i) { qz.spoken = qz.i; speak(q.prompt); }
   const form = main.querySelector('#qz-type');
   if (form) {
     form.onsubmit = (e) => {
@@ -1107,18 +1216,20 @@ async function viewStats(guard) {
   const rate = week.length ? Math.round((week.filter((r) => r.correct).length / week.length) * 100) + ' %' : '—';
 
   const days = [];
+  // Study days (start at DAY_START); +26 h then startOfDay lands on the next day even across DST changes.
+  const nextDay = (from) => startOfDay(from + DAY + 2 * HOUR);
   for (let i = 13; i >= 0; i--) {
-    const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i);
-    const from = d.getTime(); const e = new Date(d); e.setDate(e.getDate() + 1);
-    days.push({ label: String(d.getDate()), n: reviews.filter((r) => r.createdAt >= from && r.createdAt < e.getTime()).length });
+    const from = startOfDay(Date.now() - i * DAY);
+    const to = nextDay(from);
+    days.push({ label: String(new Date(from).getDate()), n: reviews.filter((r) => r.createdAt >= from && r.createdAt < to).length });
   }
   const forecast = [];
   for (let i = 0; i < 7; i++) {
-    const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + i);
-    const e = new Date(d); e.setDate(e.getDate() + 1);
+    const from = startOfDay(Date.now() + i * DAY);
+    const to = nextDay(from);
     forecast.push({
-      label: i === 0 ? 'auj.' : d.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', ''),
-      n: cards.filter((c) => c.lastReview && !c.suspended && (i === 0 ? c.dueDate < e.getTime() : c.dueDate >= d.getTime() && c.dueDate < e.getTime())).length,
+      label: i === 0 ? 'auj.' : new Date(from).toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', ''),
+      n: cards.filter((c) => c.lastReview && !c.suspended && (i === 0 ? c.dueDate < to : c.dueDate >= from && c.dueDate < to)).length,
     });
   }
   const chart = (data) => {
@@ -1168,6 +1279,8 @@ async function viewSettings(guard) {
     <div class="panel">
       <label class="field"><span>Objectif quotidien (réponses)</span><input type="number" inputmode="numeric" min="1" id="goal" value="${settings.dailyGoal}"></label>
       <label class="field" style="margin:0"><span>Nouvelles cartes par jour</span><input type="number" inputmode="numeric" min="0" id="newPerDay" value="${settings.newPerDay}"></label>
+      <label class="field" style="margin:12px 0 0"><span>La journée commence à (heure, 0–23). Réviser avant compte pour la veille.</span><input type="number" inputmode="numeric" min="0" max="23" id="dayStart" value="${settings.dayStartHour}"></label>
+      ${canSpeak ? `<label class="row" style="border:0;padding:12px 0 0"><div class="grow">Lire le recto automatiquement</div><input type="checkbox" id="autoplay" style="width:22px;height:22px"${settings.autoplay ? ' checked' : ''}></label>` : ''}
     </div>
     ${'setAppBadge' in navigator && 'Notification' in window ? `<div class="list"><button class="row" data-a="badge"><div class="grow"><div class="title">Pastille sur l’icône</div>
       <div class="sub">${Notification.permission === 'granted' ? 'Activée : nombre de cartes à réviser, mis à jour à chaque ouverture' : Notification.permission === 'denied' ? 'Refusée : à réactiver dans Réglages iOS › Notifications' : 'Touche pour autoriser'}</div></div></button></div>` : ''}
@@ -1203,6 +1316,14 @@ async function viewSettings(guard) {
   };
   main.querySelector('#goal').onchange = saveNum('dailyGoal', 1);
   main.querySelector('#newPerDay').onchange = saveNum('newPerDay', 0);
+  main.querySelector('#dayStart').onchange = async (e) => {
+    const v = Math.min(23, Math.max(0, Math.floor(Number(e.target.value) || 0)));
+    e.target.value = v;
+    await setSetting('dayStartHour', v);
+    toast('Enregistré');
+  };
+  const auto = main.querySelector('#autoplay');
+  if (auto) auto.onchange = async () => { await setSetting('autoplay', auto.checked); toast(auto.checked ? 'Lecture automatique activée' : 'Lecture automatique désactivée'); };
 }
 
 async function wipeAll() {
@@ -1218,6 +1339,7 @@ async function wipeAll() {
 
 function go(tab) {
   state.tab = tab;
+  state.select = null;
   if (tab !== 'quiz') state.quiz = null;
   render();
 }
@@ -1293,14 +1415,27 @@ async function importBackup() {
   try { data = JSON.parse(text); } catch (_) { toast('Fichier JSON invalide'); return; }
   const n = Array.isArray(data) ? data.length : data && Array.isArray(data.cards) ? data.cards.length : 0;
   if (!n) { toast('Ce fichier n’est pas une sauvegarde valide'); return; }
-  if (!confirm(`Importer ${plural(n, 'carte', 'cartes')} ? Elles seront ajoutées aux données existantes.`)) return;
-  const added = await importBackupData(data);
+  const lib = await loadLibrary();
+  const r = await sheet({
+    title: 'Importer', submitLabel: '',
+    text: `Le fichier contient ${plural(n, 'carte', 'cartes')}. Tu en as ${lib.cards.length} actuellement.`,
+    extra: [
+      { label: 'Ajouter à mes cartes', action: 'add' },
+      { label: 'Remplacer toutes mes données', action: 'replace', danger: true },
+    ],
+  });
+  if (!r) return;
+  const replace = r.action === 'replace';
+  if (replace && lib.cards.length && !confirm(`Effacer tes ${plural(lib.cards.length, 'carte', 'cartes')}, leur historique et tes réglages, puis les remplacer par le fichier ?`)) return;
+  const added = await importBackupData(data, replace);
   toast(`${plural(added, 'carte importée', 'cartes importées')}`);
+  state.lib = { subjectId: null, themeId: null, search: '' };
   render();
 }
 
-/* Merges a backup object into the database in one atomic transaction (ids are re-mapped). */
-async function importBackupData(data) {
+/* Merges a backup object into the database in one atomic transaction (ids are re-mapped).
+   replace = true wipes the current data (and settings, if the file has some) in that same transaction. */
+async function importBackupData(data, replace = false) {
   const now = Date.now();
   // Legacy format: a plain array of flashcards without subjects/themes.
   if (Array.isArray(data)) {
@@ -1310,7 +1445,12 @@ async function importBackupData(data) {
   const themes = Array.isArray(data.themes) ? data.themes : [];
   const reviews = Array.isArray(data.reviews) ? data.reviews : [];
   let added = 0;
-  await tx(['subjects', 'themes', 'cards', 'reviews'], 'readwrite', (t) => {
+  const settings = replace && Array.isArray(data.settings) ? data.settings.filter((x) => x && x.key in DEFAULT_SETTINGS && x.key !== 'lastBackup' && typeof x.value === typeof DEFAULT_SETTINGS[x.key]) : [];
+  await tx(['subjects', 'themes', 'cards', 'reviews', 'settings'], 'readwrite', (t) => {
+    if (replace) {
+      ['subjects', 'themes', 'cards', 'reviews'].forEach((st) => onReq(t.objectStore(st).clear()));
+      settings.forEach((x) => onReq(t.objectStore('settings').put({ key: x.key, value: x.value })));
+    }
     addAll(t, 'subjects', subjects, (s) => (s.name ? { ...s, createdAt: s.createdAt || now, updatedAt: now } : null), (subjMap) => {
       addAll(t, 'themes', themes, (th) => (subjMap.has(th.subjectId) && th.name ? { ...th, direction: DIRECTIONS.some((d) => d.value === th.direction) ? th.direction : 'front', subjectId: subjMap.get(th.subjectId), createdAt: th.createdAt || now, updatedAt: now } : null), (themeMap) => {
         addAll(t, 'cards', data.cards, (c) => {
@@ -1400,14 +1540,18 @@ async function importCSVFile() {
   const records = csvToRecords(rows);
   if (!records.length) { toast('Aucune carte valide (recto + verso requis)'); return; }
   if (!confirm(`Importer ${plural(records.length, 'carte', 'cartes')} ?`)) return;
-  await importRecords(records);
-  toast(`${plural(records.length, 'carte importée', 'cartes importées')}`);
+  const skipped = await importRecords(records);
+  toast(plural(records.length - skipped, 'carte importée', 'cartes importées') + (skipped ? `, ${plural(skipped, 'doublon ignoré', 'doublons ignorés')}` : ''));
   render();
 }
 
-/* Inserts CSV records, creating subjects/themes by name when missing, in one transaction. */
+/* Inserts CSV records, creating subjects/themes by name when missing, in one transaction.
+   Cards whose recto + verso already exist (in the base or earlier in the file) are skipped; returns how many. */
 async function importRecords(records) {
   const lib = await loadLibrary();
+  const seen = new Set(lib.cards.map((c) => norm(c.front) + '|' + norm(c.back)));
+  const total = records.length;
+  records = records.filter((r) => { const k = norm(r.front) + '|' + norm(r.back); if (seen.has(k)) return false; seen.add(k); return true; });
   const subjects = new Map(lib.subjects.map((s) => [norm(s.name), s.id]));
   const themes = new Map(lib.themes.map((t) => [t.subjectId + '|' + norm(t.name), t.id]));
   const now = Date.now();
@@ -1431,6 +1575,7 @@ async function importRecords(records) {
     };
     step(0);
   });
+  return total - records.length;
 }
 
 async function exportCSV() {
@@ -1458,6 +1603,7 @@ document.getElementById('tabs').addEventListener('click', (e) => {
 (async function boot() {
   try {
     await openDB();
+    await getSettings(); // loads DAY_START before the first render
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   } catch (e) {
     $('#main').innerHTML = `<div class="panel empty">Impossible d’ouvrir la base locale : ${esc(e.message)}</div>`;
@@ -1466,6 +1612,12 @@ document.getElementById('tabs').addEventListener('click', (e) => {
   render();
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !state.review && !state.quiz) render(); });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    // Cache-first serves the old page once after an update; reload as soon as the new worker takes over
+    // (not on first install, and never in the middle of a review or quiz).
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController && !state.review && !state.quiz) location.reload();
+    });
     navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('SW registration failed', e));
   }
 })();

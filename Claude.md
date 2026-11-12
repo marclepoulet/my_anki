@@ -35,12 +35,13 @@ L'ancienne version Expo / React Native est archivée sur la branche git `expo-le
 
 ### Fonctionnalités
 - **Accueil :** nombre de cartes à réviser, objectif quotidien, série de jours, révision par sujet, rappel de sauvegarde si la dernière date de plus de 7 jours. Met à jour la pastille de l'icône (`navigator.setAppBadge`, iOS 16.4+, nécessite l'autorisation des notifications).
-- **Cartes :** hiérarchie **Sujet → Thème → Cartes** (création, renommage, suppression en cascade, recherche). Image facultative par carte (affichée avec le recto, réduite à 800 px en JPEG). Suspension d'une carte (exclue des révisions et du quiz). Sens de révision par thème : recto→verso, verso→recto ou au hasard (une seule planification par carte).
+- **Cartes :** hiérarchie **Sujet → Thème → Cartes** (création, renommage, suppression en cascade, recherche). Image facultative par carte (affichée avec le recto, réduite à 800 px en JPEG). Suspension d'une carte (exclue des révisions et du quiz). Sens de révision par thème : recto→verso, verso→recto ou au hasard (une seule planification par carte). **Texte à trous** : un recto contenant `{{mot}}` affiche un blanc, le verso devient facultatif ; ces cartes posent toujours le recto. Création d'une carte au recto déjà existant : confirmation demandée. **Sélection multiple** dans un thème (« Choisir ») : déplacer, suspendre, réactiver, supprimer. L'éditeur affiche la progression et les 10 dernières réponses de la carte.
 - **Révision :** file SM-2 (cartes dues + nouvelles cartes dans la limite quotidienne), 4 boutons avec aperçu de l'intervalle, glisser à gauche = À revoir / à droite = Bon. Les cartes notées « À revoir » reviennent en fin de séance (liste en mémoire ; ces réponses sont enregistrées mais ne replanifient pas). « Annuler la dernière réponse » restaure la carte et supprime la révision. Lecture à voix haute (`speechSynthesis`, voix japonaise si le texte contient des kana/kanji).
 - **Révision libre :** toujours disponible (accueil, sujet, thème), sans fin. Tire une carte au hasard proportionnellement à son poids `weight` (jamais deux fois de suite la même). Chaque note multiplie le poids : À revoir ×2, Difficile ×1,5, Bon ×0,8, Facile ×0,5 (bornes 0,1–10). Les notes de la révision SM-2 mettent aussi le poids à jour. La révision libre **ne touche pas** la planification SM-2.
-- **Quiz :** QCM à 4 choix ou réponse tapée (comparaison sans casse/accents/ponctuation, « a, b / c » accepte chaque partie, bouton « J'avais bon ») (distracteurs pris dans le même thème, puis le même sujet, puis partout), sens recto→verso ou inverse, « rejouer les erreurs ». **N'influence pas** la planification SM-2.
+- **Quiz :** QCM à 4 choix ou réponse tapée (comparaison sans casse/accents/ponctuation, « a, b / c » accepte chaque partie, bouton « J'avais bon ») (distracteurs pris dans le même thème, puis le même sujet, puis partout), sens recto→verso ou inverse, « rejouer les erreurs ». Mode **à l'écoute** : la question est lue (`speechSynthesis`) et affichée seulement après la réponse. Texte à trous : question = phrase avec blancs, réponse = mots cachés. **N'influence pas** la planification SM-2.
 - **Stats :** totaux, réussite sur 7 jours, calendrier d'activité sur 17 semaines, activité sur 14 jours, prévision sur 7 jours, cartes difficiles.
-- **Réglages :** objectif quotidien, nouvelles cartes/jour, sauvegarde JSON, import/export CSV, effacement total.
+- **Réglages :** objectif quotidien, nouvelles cartes/jour, heure de début de journée, lecture automatique du recto, sauvegarde JSON, import/export CSV, effacement total.
+- **Mises à jour :** quand un nouveau Service Worker prend le contrôle, la page se recharge seule (sauf pendant une révision ou un quiz).
 
 ---
 
@@ -150,7 +151,8 @@ interface Review {          // Historique : révisions SM-2, révision libre ET 
   createdAt: number;
 }
 
-// settings : { key: 'dailyGoal', value: 20 }, { key: 'newPerDay', value: 20 }, { key: 'lastBackup', value: 0 } (timestamp du dernier export JSON)
+// settings : { key: 'dailyGoal', value: 20 }, { key: 'newPerDay', value: 20 }, { key: 'lastBackup', value: 0 } (timestamp du dernier export JSON),
+//            { key: 'dayStartHour', value: 4 } (0–23), { key: 'autoplay', value: false }
 // Les champs facultatifs ci-dessus ne nécessitent pas de migration (pas de nouvel index) : DB_VERSION reste 1.
 ```
 
@@ -193,7 +195,10 @@ Le moteur implémente l'algorithme standard SuperMemo 2 avec 4 niveaux d'évalua
    - Pour $q = 2$ et $\text{repetitions} > 1$ : $I = \text{round}(I_{\text{précédent}} \times 1.2)$ au lieu de $\times EF$.
 
 3. **Calcul de la date d'échéance (`dueDate`) :**
-   $$\text{dueDate} = \text{Date.now}() + (I \times 86{,}400{,}000)$$
+   $$\text{dueDate} = \text{startOfDay}(\text{Date.now}() + I \times 86{,}400{,}000)$$
+   `startOfDay` renvoie le début de la « journée d'étude », qui commence à `dayStartHour` (4 h par défaut) : une carte notée à 21 h est due dès le lendemain matin.
+
+4. **Cartes « sangsues » :** à la 8e erreur (`lapses ≥ LEECH`), la carte est suspendue automatiquement pour être reformulée.
 
 ---
 
@@ -209,8 +214,8 @@ Le moteur implémente l'algorithme standard SuperMemo 2 avec 4 niveaux d'évalua
 ## 8. Sauvegarde et portabilité des données
 
 - **Exportation JSON :** Lire tous les stores et produire `{ app: 'anki-local', version: 1, exportedAt, subjects, themes, cards, reviews, settings }` dans un `Blob`, partagé via la feuille de partage iOS (`navigator.share`) ou téléchargé (`anki_backup_YYYY-MM-DD.json`).
-- **Importation JSON :** Lire le fichier via `FileReader`. Supprimer les `id` existants pour éviter les collisions, puis insérer sujets → thèmes → cartes → historique **dans une transaction atomique unique**, en re-mappant `subjectId`, `themeId` et `cardId` vers les nouvelles clés. L'import **ajoute** aux données existantes (pas de remplacement). Un ancien export au format « tableau de `Flashcard` » est accepté et rangé dans le sujet « Importé › Général ».
-- **CSV :** séparateur `,`, `;` ou tabulation détecté automatiquement. En-têtes reconnus : `subject`/`sujet`, `theme`, `front`/`recto`/`question`, `back`/`verso`/`reponse`, `notes`. Les colonnes `kana`, `romaji`, `kanji`, `translation`, `example` sont ajoutées aux notes. Sans en-tête reconnu : `front, back, notes`. Les sujets/thèmes manquants sont créés par nom.
+- **Importation JSON :** Lire le fichier via `FileReader`. Supprimer les `id` existants pour éviter les collisions, puis insérer sujets → thèmes → cartes → historique **dans une transaction atomique unique**, en re-mappant `subjectId`, `themeId` et `cardId` vers les nouvelles clés. L'utilisateur choisit **Ajouter** (aux données existantes) ou **Remplacer** : les 4 stores sont vidés dans la même transaction, et les réglages du fichier sont appliqués (clés connues et de type valide uniquement, sauf `lastBackup`). Un ancien export au format « tableau de `Flashcard` » est accepté et rangé dans le sujet « Importé › Général ».
+- **CSV :** séparateur `,`, `;` ou tabulation détecté automatiquement. En-têtes reconnus : `subject`/`sujet`, `theme`, `front`/`recto`/`question`, `back`/`verso`/`reponse`, `notes`. Les colonnes `kana`, `romaji`, `kanji`, `translation`, `example` sont ajoutées aux notes. Sans en-tête reconnu : `front, back, notes`. Les sujets/thèmes manquants sont créés par nom. Les cartes dont recto + verso (normalisés) existent déjà, en base ou plus haut dans le fichier, sont ignorées et comptées comme doublons.
 
 ---
 
