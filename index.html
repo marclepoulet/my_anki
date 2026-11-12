@@ -7,24 +7,28 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Anki">
-<meta name="theme-color" content="#4f46e5">
+<meta name="theme-color" content="#d9dfe3">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
 <title>Anki</title>
 <style>
+/* Index card (bristol) on a blue-grey desk blotter. */
 :root {
-  --bg: #f2f2f7; --surface: #ffffff; --text: #111827; --muted: #6b7280; --line: #e5e7eb;
-  --accent: #4f46e5; --accent-fg: #ffffff; --accent-soft: #eef2ff;
-  --again: #dc2626; --hard: #d97706; --good: #16a34a; --easy: #2563eb;
-  --ok-soft: #dcfce7; --bad-soft: #fee2e2;
+  --bg: #d9dfe3; --surface: #ffffff; --text: #2a2d31; --muted: #5d6670; --line: #bfc8cf;
+  --accent: #1f3a7a; --accent-fg: #ffffff; --accent-soft: #e3e8f1;
+  --margin: #c8372d; --rule: #c9d6ea;
+  --again: #c8372d; --hard: #a5670f; --good: #2d7a4b; --easy: #1f3a7a;
+  --ok-soft: #e1efe6; --bad-soft: #f6e0dd;
+  --serif: "New York", ui-serif, "Hiragino Mincho ProN", "Yu Mincho", Georgia, serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #000000; --surface: #1c1c1e; --text: #f3f4f6; --muted: #9ca3af; --line: #2c2c2e;
-    --accent: #818cf8; --accent-fg: #0b0b12; --accent-soft: #23234a;
-    --again: #f87171; --hard: #fbbf24; --good: #4ade80; --easy: #60a5fa;
-    --ok-soft: #14361f; --bad-soft: #3f1515;
+    --bg: #15181c; --surface: #252a30; --text: #e6e8eb; --muted: #9aa3ad; --line: #353c45;
+    --accent: #9db4e8; --accent-fg: #101318; --accent-soft: #263043;
+    --margin: #e0675d; --rule: #2e353e;
+    --again: #e0675d; --hard: #d9a24a; --good: #6cc08f; --easy: #9db4e8;
+    --ok-soft: #1d3326; --bad-soft: #3a2120;
   }
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -61,14 +65,14 @@ main {
 .tabs svg { width: 24px; height: 24px; }
 .hidden { display: none !important; }
 
-.panel { background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 12px; }
-.section-title { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 18px 4px 6px; }
-.list { background: var(--surface); border-radius: 14px; overflow: hidden; margin-bottom: 12px; }
+.panel { background: var(--surface); border-radius: 4px; padding: 16px; margin-bottom: 12px; }
+.section-title { font-size: 15px; font-weight: 600; color: var(--muted); margin: 22px 0 4px; }
+/* Lists read like a notebook: plain ruled rows on the desk, no boxes. */
+.list { border-top: 1px solid var(--line); margin-bottom: 12px; }
 .row {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
-  padding: 13px 16px; border: 0; background: none; border-bottom: 1px solid var(--line);
+  padding: 13px 2px; border: 0; background: none; border-bottom: 1px solid var(--line);
 }
-.row:last-child { border-bottom: 0; }
 .row .grow { flex: 1; min-width: 0; }
 .row .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .sub { color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -79,7 +83,7 @@ main {
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  min-height: 44px; padding: 10px 16px; border-radius: 12px; border: 0;
+  min-height: 44px; padding: 10px 16px; border-radius: 6px; border: 0;
   background: var(--accent-soft); color: var(--accent); font-weight: 600;
 }
 .btn.primary { background: var(--accent); color: var(--accent-fg); }
@@ -103,39 +107,49 @@ main {
 .chart .lbl { font-size: 10px; color: var(--muted); }
 .chart .val { font-size: 10px; color: var(--muted); }
 
-.search { width: 100%; padding: 11px 14px; border-radius: 12px; border: 0; background: var(--surface); margin-bottom: 12px; }
+.search { width: 100%; padding: 11px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); margin-bottom: 12px; }
 
-/* Review & quiz */
+/* The index card: red margin line under the header, pale blue rules below.
+   Cards still in the pile show as offset edges (box-shadow set in JS). */
 .flash {
-  background: var(--surface); border-radius: 18px; padding: 28px 20px; min-height: 260px;
-  display: flex; flex-direction: column; justify-content: center; text-align: center; margin-bottom: 16px;
+  position: relative; display: flex; flex-direction: column; justify-content: center; text-align: center;
+  min-height: 300px; padding: 52px 20px 28px; margin-bottom: 44px; border-radius: 3px;
+  background-color: var(--surface);
+  background-image: linear-gradient(var(--margin), var(--margin)), repeating-linear-gradient(transparent 0 35px, var(--rule) 35px 36px);
+  background-size: 100% 2px, 100% calc(100% - 46px);
+  background-position: 0 42px, 0 46px;
+  background-repeat: no-repeat;
+  font-family: var(--serif);
 }
-.flash .q { font-size: 26px; font-weight: 600; white-space: pre-wrap; word-break: break-word; }
-.flash .a { font-size: 22px; white-space: pre-wrap; word-break: break-word; }
-.flash .notes { font-size: 16px; color: var(--muted); white-space: pre-wrap; margin-top: 10px; }
-.flash hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; width: 100%; }
-.flash .crumb { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+.flash .q { font-size: 32px; line-height: 1.25; white-space: pre-wrap; word-break: break-word; }
+.flash .a { font-size: 24px; line-height: 1.3; color: var(--accent); white-space: pre-wrap; word-break: break-word; }
+.flash .notes { font-size: 17px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; margin-top: 10px; }
+.flash hr { border: 0; margin: 18px 0; }
+.flash .crumb { position: absolute; top: 14px; left: 20px; right: 20px; text-align: left; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flash.flip { animation: flip .32s ease-out; }
+@keyframes flip { from { transform: perspective(900px) rotateX(70deg); opacity: .4; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .flash.flip { animation: none; } }
 .answers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-.answers button { border: 0; border-radius: 12px; padding: 10px 4px; min-height: 64px; color: #fff; font-weight: 700; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.answers button { border: 0; border-radius: 6px; padding: 10px 4px; min-height: 64px; color: #fff; font-weight: 700; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .answers small { font-weight: 500; opacity: .9; font-size: 12px; }
 .r1 { background: var(--again); } .r2 { background: var(--hard); } .r3 { background: var(--good); } .r4 { background: var(--easy); }
 @media (prefers-color-scheme: dark) { .answers button { color: #0b0b12; } }
 .choices { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
-.choice { border: 2px solid var(--line); background: var(--surface); border-radius: 14px; padding: 14px 16px; text-align: left; min-height: 52px; white-space: pre-wrap; word-break: break-word; }
+.choice { border: 2px solid var(--line); background: var(--surface); border-radius: 6px; padding: 14px 16px; text-align: left; min-height: 52px; white-space: pre-wrap; word-break: break-word; font-family: var(--serif); font-size: 18px; }
 .choice.ok { border-color: var(--good); background: var(--ok-soft); }
 .choice.bad { border-color: var(--again); background: var(--bad-soft); }
 
 /* Sheets & toast */
 .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; z-index: 10; }
 .sheet {
-  width: 100%; max-height: 88vh; overflow-y: auto; background: var(--bg); border-radius: 16px 16px 0 0;
+  width: 100%; max-height: 88vh; overflow-y: auto; background: var(--bg); border-radius: 10px 10px 0 0;
   padding: 8px calc(env(safe-area-inset-right) + 16px) calc(env(safe-area-inset-bottom) + 16px) calc(env(safe-area-inset-left) + 16px);
 }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .field { display: block; margin-bottom: 12px; }
 .field span { display: block; font-size: 13px; color: var(--muted); margin: 0 4px 4px; }
 .field input, .field textarea, .field select {
-  width: 100%; padding: 11px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); resize: vertical;
+  width: 100%; padding: 11px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); resize: vertical;
 }
 .sheet .btn { margin-top: 8px; }
 .toast {
@@ -172,6 +186,12 @@ const dayKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + (d
 const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const norm = (s) => String(s ?? '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const plural = (n, one, many) => n + ' ' + (n > 1 ? many : one);
+/* Inline style that draws up to 4 card edges under an index card, one per card left in the pile. */
+function stack(n) {
+  const s = ['0 1px 3px rgba(0,0,0,.18)'];
+  for (let i = 1; i <= Math.min(n - 1, 4); i++) s.push(`0 ${i * 6}px 0 ${-i * 3}px var(--surface)`, `0 ${i * 6}px 0 ${1 - i * 3}px var(--line)`);
+  return 'box-shadow:' + s.join(',');
+}
 
 function fmtInterval(days) {
   if (days < 30) return days + ' j';
@@ -527,11 +547,12 @@ async function viewHome(guard) {
   const dueBySubject = new Map();
   lib.cards.forEach((c) => { if (c.dueDate <= now) { const s = subjOf.get(c.themeId); dueBySubject.set(s, (dueBySubject.get(s) || 0) + 1); } });
   setMain(`
-    <div class="panel">
-      <div class="big">${queue.length}</div>
-      <div class="muted">${queue.length ? `${plural(learned, 'carte à revoir', 'cartes à revoir')} · ${plural(fresh, 'nouvelle', 'nouvelles')}` : 'Rien à réviser, bravo !'}</div>
-      <button class="btn primary block" style="margin-top:16px" data-a="start" ${queue.length ? '' : 'disabled'}>Commencer la révision</button>
+    <div class="flash" style="${stack(queue.length)};min-height:220px;margin-bottom:${queue.length > 1 ? 40 : 16}px" data-a="${queue.length ? 'start' : ''}">
+      <div class="crumb">Pile du jour</div>
+      <div class="q">${queue.length ? plural(queue.length, 'fiche', 'fiches') : 'Pile vide'}</div>
+      <div class="notes">${queue.length ? `${plural(learned, 'à revoir', 'à revoir')}, ${plural(fresh, 'nouvelle', 'nouvelles')}` : 'Tout est révisé pour aujourd’hui.'}</div>
     </div>
+    <button class="btn primary block" style="margin-bottom:16px" data-a="start" ${queue.length ? '' : 'disabled'}>Commencer la révision</button>
     <div class="grid">
       <div class="panel"><div class="muted small">Objectif du jour</div><div class="stat-num">${today.length}/${goal}</div><div class="bar"><div style="width:${pct}%"></div></div></div>
       <div class="panel"><div class="muted small">Série</div><div class="stat-num">${plural(streakOf(reviews), 'jour', 'jours')}</div></div>
@@ -583,9 +604,11 @@ async function viewReview(guard) {
   const controls = rv.revealed
     ? `<div class="answers">${RATINGS.map((r) => `<button class="r${r.q}" data-a="rate" data-q="${r.q}">${r.label}<small>${fmtInterval(sm2(c, r.q).interval)}</small></button>`).join('')}</div>`
     : `<button class="btn primary block" data-a="reveal" style="min-height:64px">Afficher la réponse</button>`;
-  setMain(`<div class="flash" data-a="reveal"><div class="crumb">${esc(crumb)}${c.lastReview ? '' : ' · nouvelle'}</div><div class="q">${esc(c.front)}</div>${answerHTML}</div>${controls}
+  const flip = rv.flip;
+  rv.flip = false; // animate only on the render right after the tap
+  setMain(`<div class="flash${flip ? ' flip' : ''}" style="${stack(rv.remaining)}" data-a="reveal"><div class="crumb">${esc(crumb)}${c.lastReview ? '' : ', nouvelle'}</div><div class="q">${esc(c.front)}</div>${answerHTML}</div>${controls}
     <div style="text-align:center;margin-top:12px"><button class="link small" data-a="edit">Modifier la carte</button></div>`, {
-    reveal: () => { if (!rv.revealed) { rv.revealed = true; render(); } },
+    reveal: () => { if (!rv.revealed) { rv.revealed = true; rv.flip = true; render(); } },
     rate: (d) => rateCard(+d.q),
     edit: async () => { await editCard(c); render(); },
   });
