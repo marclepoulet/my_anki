@@ -131,6 +131,18 @@ main {
 .flash .crumb { position: absolute; top: 14px; left: 20px; right: 20px; text-align: left; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .flash img { display: block; max-width: 100%; max-height: 220px; margin: 12px auto 0; border-radius: 2px; }
 .flash.swipe { touch-action: pan-y; }
+.reading { font-family: var(--serif); font-size: 20px; color: var(--muted); margin-top: 4px; }
+.jp { font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif; }
+.pad-wrap { margin: 0 auto 16px; max-width: 360px; }
+/* Writing square with a dashed centre cross, like Japanese practice paper. */
+canvas.pad {
+  display: block; width: 100%; aspect-ratio: 1; touch-action: none; border-radius: 4px; color: var(--text);
+  background-color: var(--surface);
+  background-image: linear-gradient(90deg, transparent calc(50% - .5px), var(--rule) calc(50% - .5px), var(--rule) calc(50% + .5px), transparent calc(50% + .5px)),
+                    linear-gradient(transparent calc(50% - .5px), var(--rule) calc(50% - .5px), var(--rule) calc(50% + .5px), transparent calc(50% + .5px));
+  box-shadow: 0 1px 3px rgba(0,0,0,.18);
+}
+.tags { color: var(--accent); }
 .cloze { color: var(--accent); background: var(--accent-soft); border-radius: 3px; padding: 0 4px; font-weight: 600; }
 .say { border: 0; background: none; color: var(--muted); min-width: 44px; min-height: 40px; margin: 2px auto 0; display: inline-flex; align-items: center; justify-content: center; }
 .say svg { width: 22px; height: 22px; }
@@ -262,6 +274,13 @@ function updateBadge(n) {
   (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
 }
 
+const MIN = 60000;
+function fmtDelay(ms) {
+  const m = Math.max(1, Math.round(ms / MIN));
+  if (m < 60) return m + ' min';
+  if (m < 24 * 60) return Math.round(m / 60) + ' h';
+  return fmtInterval(Math.round(m / 1440));
+}
 function fmtInterval(days) {
   if (days < 30) return days + ' j';
   if (days < 365) return Math.round(days / 30) + ' mois';
@@ -272,7 +291,7 @@ function dueLabel(card) {
   if (!card.lastReview) return 'Nouvelle';
   const diff = card.dueDate - Date.now();
   if (diff <= 0) return 'À réviser';
-  return 'Dans ' + fmtInterval(Math.max(1, Math.ceil(diff / DAY)));
+  return 'Dans ' + (diff < DAY ? fmtDelay(diff) : fmtInterval(Math.max(1, Math.ceil(diff / DAY))));
 }
 let toastTimer = null;
 function toast(msg) {
@@ -289,7 +308,7 @@ function toast(msg) {
    ============================================================ */
 const DB_NAME = 'AnkiLocalDB';
 const DB_VERSION = 1;
-const DEFAULT_SETTINGS = { dailyGoal: 20, newPerDay: 20, lastBackup: 0, dayStartHour: 4, autoplay: false };
+const DEFAULT_SETTINGS = { dailyGoal: 20, newPerDay: 20, lastBackup: 0, dayStartHour: 4, autoplay: false, algorithm: 'fsrs', retention: 0.9 };
 const LEECH = 8; // a card failed this many times is suspended so it can be rewritten
 let db = null;
 
@@ -377,7 +396,7 @@ function newCard(themeId, front, back, notes) {
   return { themeId, front, back, notes: notes || '', interval: 0, repetitions: 0, easeFactor: 2.5, dueDate: now, createdAt: now, lastReview: null, lapses: 0 };
 }
 function resetProgress(card) {
-  return { ...card, interval: 0, repetitions: 0, easeFactor: 2.5, dueDate: Date.now(), lastReview: null, lapses: 0, weight: undefined };
+  return { ...card, interval: 0, repetitions: 0, easeFactor: 2.5, dueDate: Date.now(), lastReview: null, lapses: 0, weight: undefined, state: 'new', step: 0, stability: undefined, difficulty: undefined };
 }
 
 function deleteCardsOfTheme(t, themeId) {
@@ -408,21 +427,27 @@ function scopeFilter(scope, themes) {
   return (c) => subjOf.get(c.themeId) === scope.subjectId;
 }
 
-/* Due learned cards first (oldest due first), then new cards up to the daily new-card limit. */
+/* Order: learning cards due now, due reviews (oldest first), new cards up to the daily limit, then learning
+   cards due within the next 20 min (shown early rather than ending the session on a wait, like Anki). */
+const LEARN_AHEAD = 20 * 60000;
 async function buildQueue(scope) {
+  const now = Date.now();
   const [due, themes, settings, today] = await Promise.all([
-    getAll('cards', 'dueDate', IDBKeyRange.upperBound(Date.now())),
+    getAll('cards', 'dueDate', IDBKeyRange.upperBound(now + LEARN_AHEAD)),
     getAll('themes'),
     getSettings(),
     getAll('reviews', 'createdAt', IDBKeyRange.lowerBound(startOfDay())),
   ]);
   const cards = due.filter((c) => !c.suspended).filter(scopeFilter(scope, themes));
-  const learned = cards.filter((c) => c.lastReview).sort((a, b) => a.dueDate - b.dueDate);
+  const byDue = (x, y) => x.dueDate - y.dueDate;
+  const learning = cards.filter((c) => stateOf(c) === 'learning' || stateOf(c) === 'relearning').sort(byDue);
+  const reviews = cards.filter((c) => stateOf(c) === 'review' && c.dueDate <= now).sort(byDue);
   const newToday = today.filter((r) => r.kind === 'review' && r.wasNew).length;
-  const fresh = cards.filter((c) => !c.lastReview)
-    .sort((a, b) => a.createdAt - b.createdAt)
+  const fresh = cards.filter((c) => stateOf(c) === 'new' && c.dueDate <= now)
+    .sort((x, y) => x.createdAt - y.createdAt)
     .slice(0, Math.max(0, settings.newPerDay - newToday));
-  return { queue: learned.concat(fresh), learned: learned.length, fresh: fresh.length };
+  const queue = learning.filter((c) => c.dueDate <= now).concat(reviews, fresh, learning.filter((c) => c.dueDate > now));
+  return { queue, learned: reviews.length + learning.length, fresh: fresh.length };
 }
 
 /* Free review: any card can come up, drawn at random in proportion to its weight.
@@ -440,7 +465,7 @@ function pickWeighted(cards, avoidId) {
 }
 
 /* ============================================================
-   3. SM-2 Logic
+   3. Scheduling: learning steps + FSRS (default) or SM-2
    ============================================================ */
 const RATINGS = [
   { q: 1, label: 'À revoir' },
@@ -450,7 +475,12 @@ const RATINGS = [
 ];
 const EASY_BONUS = 1.3;
 const HARD_FACTOR = 1.2;
+const LEARN_STEPS = [1, 10]; // minutes, new cards
+const RELEARN_STEPS = [10]; // minutes, after a lapse
+// Cards stored before learning steps existed have no state: never answered = new, otherwise review.
+const stateOf = (c) => c.state || (c.lastReview ? 'review' : 'new');
 
+/* SM-2 update for a review card (also used for a lapse: q = 1). */
 function sm2(card, q) {
   // Buttons 1..4 map to SM-2 grades 2..5, so "Bon" keeps EF stable instead of lowering it by 0.14 each time.
   const g = q + 1;
@@ -471,6 +501,68 @@ function sm2(card, q) {
   }
   // Due at the start of the study day, so a card answered at 21 h is ready the next morning, not at 21 h.
   return { interval, repetitions, easeFactor: Math.round(ef * 100) / 100, dueDate: startOfDay(Date.now() + interval * DAY) };
+}
+
+/* FSRS-4.5 with its published default parameters. Stability S = days until recall drops to 90 %. */
+const FW = [0.4872, 1.4003, 3.7145, 13.8206, 5.1618, 1.2298, 0.8975, 0.031, 1.6474, 0.1367, 1.0461, 2.1072, 0.0793, 0.3246, 1.587, 0.2272, 2.8755];
+const F_DECAY = -0.5;
+const F_FACTOR = 19 / 81;
+const clampD = (d) => Math.min(10, Math.max(1, d));
+const initD = (q) => clampD(FW[4] - (q - 3) * FW[5]);
+const recallProb = (days, s) => Math.pow(1 + (F_FACTOR * days) / s, F_DECAY);
+const fsrsDays = (s, retention) => Math.max(1, Math.round((s / F_FACTOR) * (Math.pow(retention, 1 / F_DECAY) - 1)));
+const round2 = (x) => Math.round(x * 100) / 100;
+/* New stability/difficulty after answer q. Cards coming from SM-2 start from their interval and ease. */
+function fsrsMemory(card, q, now) {
+  if (stateOf(card) === 'new') return { stability: FW[q - 1], difficulty: round2(initD(q)) };
+  const s = card.stability ?? Math.max(0.5, card.interval || 1);
+  const d = card.difficulty ?? clampD(5 + (2.5 - (card.easeFactor || 2.5)) * 3.5);
+  const r = recallProb(Math.max(0, (now - (card.lastReview || now)) / DAY), s);
+  const s2 = q === 1
+    ? Math.min(s, FW[11] * Math.pow(d, -FW[12]) * (Math.pow(s + 1, FW[13]) - 1) * Math.exp(FW[14] * (1 - r)))
+    : s * (Math.exp(FW[8]) * (11 - d) * Math.pow(s, -FW[9]) * (Math.exp(FW[10] * (1 - r)) - 1) * (q === 2 ? FW[15] : 1) * (q === 4 ? FW[16] : 1) + 1);
+  const d2 = clampD(FW[7] * initD(4) + (1 - FW[7]) * (d - FW[6] * (q - 3)));
+  return { stability: round2(Math.max(0.1, s2)), difficulty: round2(d2) };
+}
+
+/* Returns the card after answer q: learning/relearning steps in minutes, then day intervals from the model. */
+function schedule(card, q, settings, now = Date.now()) {
+  const fsrs = settings.algorithm !== 'sm2';
+  const st = stateOf(card);
+  const lapse = st === 'review' && q === 1;
+  // The memory model moves on real reviews and on the first answer of a new card, not on same-day step repeats.
+  let mem = {};
+  if (st === 'review') {
+    if (fsrs) mem = fsrsMemory(card, q, now);
+    else { const r = sm2(card, q); mem = { interval: r.interval, repetitions: r.repetitions, easeFactor: r.easeFactor }; }
+  } else if (st === 'new' && fsrs) mem = fsrsMemory(card, q, now);
+  const next = { ...card, ...mem, lastReview: now, lapses: (card.lapses || 0) + (lapse ? 1 : 0) };
+  const toReview = (days) => ({ ...next, state: 'review', step: 0, interval: days, dueDate: startOfDay(now + days * DAY) });
+  if (lapse) return { ...next, state: 'relearning', step: 0, dueDate: now + RELEARN_STEPS[0] * MIN };
+  if (st === 'review') {
+    if (!fsrs) return toReview(next.interval);
+    // FSRS: keep Hard <= Good < Easy whatever the model says.
+    const days = (g) => fsrsDays(fsrsMemory(card, g, now).stability, settings.retention);
+    const hard = days(2);
+    const good = Math.max(days(3), hard + 1);
+    return toReview(q === 2 ? hard : q === 3 ? good : Math.max(days(4), good + 1));
+  }
+  const relearn = st === 'relearning';
+  const steps = relearn ? RELEARN_STEPS : LEARN_STEPS;
+  const state = relearn ? 'relearning' : 'learning';
+  const cur = st === 'new' ? 0 : Math.min(card.step || 0, steps.length - 1);
+  if (q === 1) return { ...next, state, step: 0, dueDate: now + steps[0] * MIN };
+  if (q === 2) return { ...next, state, step: cur, dueDate: now + Math.round((steps[cur] + (steps[cur + 1] ?? steps[cur] * 2)) / 2) * MIN };
+  if (q === 3 && cur + 1 < steps.length) return { ...next, state, step: cur + 1, dueDate: now + steps[cur + 1] * MIN };
+  // Graduation: Good after the last step, or Easy at any step.
+  if (fsrs) return toReview(Math.max(q === 4 && !relearn ? 2 : 1, fsrsDays(next.stability, settings.retention)));
+  if (relearn) return { ...toReview(Math.max(1, next.interval || 1) + (q === 4 ? 1 : 0)), repetitions: 1 };
+  return { ...toReview(q === 4 ? 4 : 1), repetitions: 1 };
+}
+/* Button caption: minutes/hours while in steps, days once in review. */
+function nextLabel(card, q, settings) {
+  const n = schedule(card, q, settings);
+  return n.state === 'review' ? fmtInterval(n.interval) : fmtDelay(n.dueDate - Date.now());
 }
 
 /* ============================================================
@@ -519,6 +611,7 @@ async function render() {
   try {
     if (state.review) { showTabs(false); await viewReview(guard); return; }
     if (state.quiz && state.quiz.questions) { showTabs(false); await viewQuizSession(guard); return; }
+    if (state.write) { showTabs(false); await viewWrite(guard); return; }
     showTabs(true);
     const views = { home: viewHome, library: viewLibrary, quiz: viewQuizSetup, stats: viewStats, settings: viewSettings };
     await views[state.tab](guard);
@@ -626,11 +719,14 @@ async function editTheme(subjectId, theme) {
 }
 
 /* Create (card = null, themeId given) or edit a card. Loops on "Enregistrer + suivante". */
+const parseTags = (s) => [...new Set(String(s || '').split(/[\s,;]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean))];
 async function editCard(card, themeId) {
   const history = card ? await getAll('reviews', 'cardId', card.id) : [];
   for (;;) {
     const lib = await loadLibrary();
     const themeOptions = lib.themes.map((t) => ({ value: t.id, label: (lib.subjectById.get(t.subjectId)?.name || '?') + ' › ' + t.name }));
+    const th = lib.themeById.get(card ? card.themeId : themeId);
+    const jp = isJapanese(th && lib.subjectById.get(th.subjectId)); // Japanese subject: word / reading / meaning / example
     const r = await sheet({
       html: card ? cardHistoryHTML(card, history) : '',
       check: (v) => {
@@ -641,9 +737,17 @@ async function editCard(card, themeId) {
       },
       title: card ? 'Modifier la carte' : 'Nouvelle carte',
       fields: [
-        { name: 'front', label: 'Recto (question). Texte à trous : « La capitale est {{Tokyo}} »', type: 'textarea', value: card ? card.front : '', required: true },
-        { name: 'back', label: 'Verso (réponse, facultatif pour un texte à trous)', type: 'textarea', value: card ? card.back : '' },
+        ...(jp ? [
+          { name: 'front', label: 'Mot (kanji ou kana)', type: 'textarea', rows: 2, value: card ? card.front : '', required: true },
+          { name: 'reading', label: 'Lecture (kana, facultatif)', value: card ? card.reading || '' : '' },
+          { name: 'back', label: 'Sens', type: 'textarea', rows: 2, value: card ? card.back : '' },
+          { name: 'example', label: 'Exemple (facultatif)', type: 'textarea', rows: 2, value: card ? card.example || '' : '' },
+        ] : [
+          { name: 'front', label: 'Recto (question). Texte à trous : « La capitale est {{Tokyo}} »', type: 'textarea', value: card ? card.front : '', required: true },
+          { name: 'back', label: 'Verso (réponse, facultatif pour un texte à trous)', type: 'textarea', value: card ? card.back : '' },
+        ]),
         { name: 'notes', label: 'Notes (facultatif)', type: 'textarea', rows: 2, value: card ? card.notes : '' },
+        { name: 'tags', label: 'Étiquettes (séparées par des espaces, facultatif)', value: card ? (card.tags || []).join(' ') : '' },
         { name: 'image', label: 'Image affichée avec le recto (facultatif)', type: 'image', value: card ? card.image : '' },
         { name: 'themeId', label: 'Thème', type: 'select', value: card ? card.themeId : themeId, options: themeOptions },
       ],
@@ -668,8 +772,9 @@ async function editCard(card, themeId) {
     }
     const v = r.values;
     const tid = Number(v.themeId);
-    if (card) await putOne('cards', { ...card, front: v.front, back: v.back, notes: v.notes, image: v.image, themeId: tid });
-    else await putOne('cards', { ...newCard(tid, v.front, v.back, v.notes), image: v.image });
+    const extra = { image: v.image, tags: parseTags(v.tags), ...(jp ? { reading: v.reading, example: v.example } : {}) };
+    if (card) await putOne('cards', { ...card, front: v.front, back: v.back, notes: v.notes, themeId: tid, ...extra });
+    else await putOne('cards', { ...newCard(tid, v.front, v.back, v.notes), ...extra });
     toast('Carte enregistrée');
     if (r.action !== 'next') return;
     themeId = tid;
@@ -685,7 +790,7 @@ function cardHistoryHTML(card, history) {
   const rows = history.slice().sort((a, b) => b.createdAt - a.createdAt).slice(0, 10).map((r) =>
     `<div class="row" style="padding:6px 2px"><div class="grow small">${esc(new Date(r.createdAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: '2-digit' }))}, ${KIND_LABEL[r.kind] || ''}</div><span class="small ${r.correct ? '' : 'muted'}">${esc(rating(r))}</span></div>`).join('');
   return `<div class="panel small">
-    <div>${esc(dueLabel(card))}${card.lastReview ? `, intervalle ${fmtInterval(card.interval)}, facilité ${String(card.easeFactor).replace('.', ',')}` : ''}${card.lapses ? `, ratée ${plural(card.lapses, 'fois', 'fois')}` : ''}.</div>
+    <div>${esc(dueLabel(card))}${card.lastReview ? `, intervalle ${fmtInterval(card.interval || 1)}${card.stability ? `, stabilité ${String(card.stability).replace('.', ',')} j, difficulté ${String(card.difficulty).replace('.', ',')}/10` : `, facilité ${String(card.easeFactor).replace('.', ',')}`}` : ''}${card.lapses ? `, ratée ${plural(card.lapses, 'fois', 'fois')}` : ''}.</div>
     ${rows ? `<div class="list" style="margin:8px 0 0">${rows}</div>` : '<div class="muted">Jamais révisée.</div>'}</div>`;
 }
 
@@ -720,6 +825,7 @@ async function viewHome(guard) {
     <div class="btn-row" style="margin-bottom:16px">
       <button class="btn primary" data-a="start" ${queue.length ? '' : 'disabled'}>Commencer la révision</button>
       <button class="btn${queue.length ? '' : ' primary'}" data-a="free">Révision libre</button>
+      <button class="btn" data-a="target">Révision ciblée</button>
     </div>
     ${now - settings.lastBackup > 7 * DAY ? `<div class="panel">
       <p style="margin:0 0 10px"><strong>${settings.lastBackup ? `Dernière sauvegarde il y a ${plural(Math.floor((now - settings.lastBackup) / DAY), 'jour', 'jours')}.` : 'Aucune sauvegarde pour l’instant.'}</strong>
@@ -738,9 +844,53 @@ async function viewHome(guard) {
       </button>`).join('')}</div>`, {
     start: () => startReview(null, 'Révision'),
     free: () => startReview(null, 'Révision libre', true),
+    target: () => targetedReview(lib, reviews),
     backup: exportBackup,
     subject: (d) => { const s = lib.subjectById.get(+d.id); startReview({ subjectId: s.id }, s.name); },
   });
+}
+
+/* Targeted review (Anki's filtered decks): pick cards by scope, tag and criterion, review each once. */
+async function targetedReview(lib, reviews) {
+  const scopes = [{ value: 'all', label: 'Toutes les cartes' }, ...lib.subjects.flatMap((s) => [
+    { value: 's:' + s.id, label: s.name },
+    ...lib.themes.filter((t) => t.subjectId === s.id).map((t) => ({ value: 't:' + t.id, label: s.name + ' › ' + t.name }))])];
+  const tags = [...new Set(lib.cards.flatMap((c) => c.tags || []))].sort((a, b) => a.localeCompare(b, 'fr'));
+  const r = await sheet({
+    title: 'Révision ciblée', submitLabel: 'Commencer',
+    text: 'Chaque carte choisie passe une fois (les ratées reviennent en fin de séance). Ne change pas les dates de révision.',
+    fields: [
+      { name: 'scope', label: 'Cartes', type: 'select', value: 'all', options: scopes },
+      { name: 'tag', label: 'Étiquette', type: 'select', value: '', options: [{ value: '', label: 'Toutes' }, ...tags.map((t) => ({ value: t, label: '#' + t }))] },
+      { name: 'filter', label: 'Lesquelles', type: 'select', value: 'failed', options: [
+        { value: 'failed', label: 'Ratées ces 7 derniers jours' },
+        { value: 'hard', label: 'Difficiles (souvent ratées)' },
+        { value: 'soon', label: 'À réviser dans les 3 prochains jours' },
+        { value: 'new', label: 'Nouvelles' },
+        { value: 'any', label: 'Toutes' },
+      ] },
+      { name: 'max', label: 'Nombre maximum', type: 'select', value: '20', options: ['10', '20', '50', '100'].map((n) => ({ value: n, label: n })) },
+    ],
+  });
+  if (!r) return;
+  const v = r.values;
+  const [kind, idStr] = v.scope.split(':');
+  const id = Number(idStr);
+  const subjOf = new Map(lib.themes.map((t) => [t.id, t.subjectId]));
+  const failed = new Set(reviews.filter((x) => !x.correct && x.createdAt >= Date.now() - 7 * DAY).map((x) => x.cardId));
+  const soon = startOfDay(Date.now() + 3 * DAY);
+  const test = {
+    failed: (c) => failed.has(c.id),
+    hard: (c) => (c.lapses || 0) >= 2 || weightOf(c) >= 2 || (c.difficulty || 0) >= 7,
+    soon: (c) => c.lastReview && c.dueDate < soon,
+    new: (c) => stateOf(c) === 'new',
+    any: () => true,
+  }[v.filter];
+  const ids = shuffle(lib.cards.filter((c) => !c.suspended && test(c)
+    && (kind === 't' ? c.themeId === id : kind === 's' ? subjOf.get(c.themeId) === id : true)
+    && (!v.tag || (c.tags || []).includes(v.tag)))).slice(0, Number(v.max)).map((c) => c.id);
+  if (!ids.length) { toast('Aucune carte ne correspond'); return; }
+  startReview(null, 'Révision ciblée', true, ids);
 }
 
 function streakOf(reviews) {
@@ -753,10 +903,12 @@ function streakOf(reviews) {
 }
 
 /* ---------- Review session ----------
-   Cards rated "À revoir" come back at the end of the session (relearn list, session only:
-   their schedule was already set by SM-2). The last answer can be undone once. */
-async function startReview(scope, label, free = false) {
-  state.review = { scope, label, free, done: 0, revealed: false, current: null, relearning: false, remaining: 0, relearn: [], undo: null, force: null, pick: null, lastId: null };
+   Normal mode follows the scheduler (learning steps bring failed cards back within the session).
+   free = weighted random, endless; list = a fixed set of ids (targeted review), answered once each,
+   failed ones go back to the end. Free and list answers only change the draw weight, never the schedule.
+   The last answer can be undone once. */
+async function startReview(scope, label, free = false, list = null) {
+  state.review = { scope, label, free: free || !!list, list, done: 0, revealed: false, current: null, remaining: 0, undo: null, force: null, pick: null, lastId: null, board: false, strokes: [] };
   await render();
 }
 async function viewReview(guard) {
@@ -764,31 +916,31 @@ async function viewReview(guard) {
   const [{ queue }, lib, settings] = await Promise.all([rv.free ? { queue: [] } : buildQueue(rv.scope), loadLibrary(), getSettings()]);
   if (!guard()) return;
   const byId = new Map(lib.cards.map((c) => [c.id, c]));
-  rv.relearn = rv.relearn.filter((id) => byId.has(id) && !byId.get(id).suspended);
-  let c = null;
-  let relearning = false;
   const usable = (id) => byId.has(id) && !byId.get(id).suspended;
-  if (rv.force && usable(rv.force.id)) { c = byId.get(rv.force.id); relearning = rv.force.relearning; }
+  let c = null;
+  if (rv.list) rv.list = rv.list.filter(usable);
+  if (rv.force && usable(rv.force)) c = byId.get(rv.force);
+  else if (rv.list) { c = rv.list.length ? byId.get(rv.list[0]) : null; rv.remaining = rv.list.length; }
   else if (rv.free) {
     const pool = lib.cards.filter((x) => !x.suspended).filter(scopeFilter(rv.scope, lib.themes));
     c = usable(rv.pick) ? byId.get(rv.pick) : pickWeighted(pool, rv.lastId); // pick stays fixed until answered
     rv.pick = c ? c.id : null;
     rv.remaining = pool.length;
-  }
-  else if (queue.length) c = queue[0];
-  else if (rv.relearn.length) { c = byId.get(rv.relearn[0]); relearning = true; }
+  } else c = queue[0] || null;
   rv.current = c;
-  rv.relearning = relearning;
-  if (!rv.free) rv.remaining = queue.length + rv.relearn.length;
-  setHeader(rv.label, { back: { label: 'Terminer', fn: endReview }, actions: c && !rv.free ? [{ label: String(rv.remaining), aria: 'Cartes restantes', fn: () => {} }] : [] });
+  if (!rv.free) rv.remaining = queue.length;
+  const showCount = c && (!rv.free || rv.list);
+  setHeader(rv.label, { back: { label: 'Terminer', fn: endReview }, actions: showCount ? [{ label: String(rv.remaining), aria: 'Cartes restantes', fn: () => {} }] : [] });
   const undoLink = rv.undo ? '<button class="link small" data-a="undo">Annuler la dernière réponse</button>' : '';
   if (!c) {
-    setMain(`<div class="panel empty"><div class="big">✓</div><p><strong>${rv.free ? 'Aucune carte à réviser ici' : 'Session terminée'}</strong></p><p>${plural(rv.done, 'réponse', 'réponses')}.</p>
+    setMain(`<div class="panel empty"><div class="big">✓</div><p><strong>${rv.free && !rv.list ? 'Aucune carte à réviser ici' : 'Session terminée'}</strong></p><p>${plural(rv.done, 'réponse', 'réponses')}.</p>
       <button class="btn primary block" data-a="end">Retour</button><div style="margin-top:8px">${undoLink}</div></div>`, { end: endReview, undo: undoRating });
     return;
   }
   const theme = lib.themeById.get(c.themeId);
-  const crumb = theme ? (lib.subjectById.get(theme.subjectId)?.name || '') + ' › ' + theme.name : '';
+  const subject = theme ? lib.subjectById.get(theme.subjectId) : null;
+  const jp = isJapanese(subject);
+  const crumb = theme ? (subject?.name || '') + ' › ' + theme.name : '';
   // Direction is drawn once per showing (card id + answer count), so re-renders keep it stable.
   const key = c.id + ':' + rv.done;
   const firstShow = rv.dirKey !== key;
@@ -796,39 +948,50 @@ async function viewReview(guard) {
     const d = (theme && theme.direction) || 'front';
     rv.dirKey = key;
     rv.backward = d === 'back' || (d === 'mixed' && Math.random() < 0.5);
+    rv.strokes = []; // fresh whiteboard for each card
   }
   const speech = {}; // text read aloud by each speaker button ('q' question, 'a' answer)
   const face = (side, cls, k) => { speech[k] = c[side]; return `<div class="${cls}">${esc(c[side])}</div>${side === 'front' ? imgHTML(c.image) : ''}${sayBtn(k)}`; };
+  const reading = c.reading ? `<div class="reading">${esc(c.reading)}</div>` : '';
   let cardHTML;
   let answerPart = '';
   if (hasCloze(c.front)) { // cloze cards always ask the recto; revealing fills the blanks in place
     speech.q = clozeText(c.front, rv.revealed);
     cardHTML = `<div class="q">${clozeHTML(c.front, rv.revealed)}</div>${imgHTML(c.image)}${sayBtn('q')}`;
     if (c.back) answerPart = face('back', 'a', 'a');
+  } else if (rv.backward) {
+    cardHTML = face('back', 'q', 'q');
+    answerPart = face('front', 'a', 'a') + reading;
   } else {
-    cardHTML = face(rv.backward ? 'back' : 'front', 'q', 'q');
-    answerPart = face(rv.backward ? 'front' : 'back', 'a', 'a');
+    cardHTML = face('front', 'q', 'q');
+    answerPart = reading + face('back', 'a', 'a');
   }
+  if (c.example) answerPart += `<div class="notes">${esc(c.example)}</div>`;
   if (c.notes) answerPart += `<div class="notes">${esc(c.notes)}</div>`;
   const answerHTML = rv.revealed && answerPart ? `<hr>${answerPart}` : '';
-  const ratings = relearning
-    ? [{ q: 1, label: 'À revoir', sub: 'encore' }, { q: 3, label: 'Bon', sub: fmtInterval(Math.max(1, Math.ceil((c.dueDate - Date.now()) / DAY))) }]
-    : RATINGS.map((r) => ({ ...r, sub: rv.free ? FREE_HINT[r.q] : fmtInterval(sm2(c, r.q).interval) }));
+  const ratings = RATINGS.map((r) => ({ ...r, sub: rv.free ? FREE_HINT[r.q] : nextLabel(c, r.q, settings) }));
   const controls = rv.revealed
-    ? `<div class="answers"${relearning ? ' style="grid-template-columns:1fr 1fr"' : ''}>${ratings.map((r) => `<button class="r${r.q}" data-a="rate" data-q="${r.q}">${r.label}<small>${r.sub}</small></button>`).join('')}</div>
+    ? `<div class="answers">${ratings.map((r) => `<button class="r${r.q}" data-a="rate" data-q="${r.q}">${r.label}<small>${r.sub}</small></button>`).join('')}</div>
        <p class="muted small center" style="margin:8px 0 0">Glisse la fiche à gauche pour « À revoir », à droite pour « Bon ».</p>`
     : `<button class="btn primary block" data-a="reveal" style="min-height:64px">Afficher la réponse</button>`;
-  const tag = relearning ? ', à revoir' : c.lastReview ? '' : ', nouvelle';
+  const st = stateOf(c);
+  const tag = st === 'new' ? ', nouvelle' : st === 'learning' || st === 'relearning' ? ', en apprentissage' : '';
+  const board = jp && rv.board ? padHTML() : '';
   const flip = rv.flip;
   rv.flip = false; // animate only on the render right after the tap
-  const main = setMain(`<div class="flash${flip ? ' flip' : ''}${rv.revealed ? ' swipe' : ''}" style="${stack(rv.remaining)}" data-a="reveal"><div class="crumb">${esc(crumb)}${tag}</div>${cardHTML}${answerHTML}</div>${controls}
-    <div class="center" style="margin-top:12px"><button class="link small" data-a="edit">Modifier la carte</button>${undoLink}</div>`, {
+  const main = setMain(`<div class="flash${flip ? ' flip' : ''}${rv.revealed ? ' swipe' : ''}" style="${stack(rv.remaining)}" data-a="reveal"><div class="crumb">${esc(crumb)}${tag}</div>${cardHTML}${answerHTML}</div>
+    ${board}${controls}
+    <div class="center" style="margin-top:12px">${jp ? `<button class="link small" data-a="board">${rv.board ? 'Masquer le tableau' : 'Tableau pour écrire'}</button>` : ''}<button class="link small" data-a="edit">Modifier la carte</button>${undoLink}</div>`, {
     reveal: () => { if (!rv.revealed) { rv.revealed = true; rv.flip = true; render(); } },
     rate: (d) => rateCard(+d.q),
     say: (d) => speak(speech[d.side]),
     undo: undoRating,
+    board: () => { rv.board = !rv.board; render(); },
+    padUndo: () => pad && pad.undo(),
+    padClear: () => pad && pad.clear(),
     edit: async () => { await editCard(c); render(); },
   });
+  const pad = board ? createPad(main.querySelector('canvas.pad'), rv.strokes) : null;
   if (rv.revealed) attachSwipe(main.querySelector('.flash'), (dir) => rateCard(dir < 0 ? 1 : 3));
   // shortcut: iOS may ignore speech not started by a tap; it works once the user has tapped a speaker button.
   if (firstShow && settings.autoplay && canSpeak) speak(speech.q);
@@ -862,23 +1025,19 @@ async function rateCard(q) {
   if (!card || !rv.revealed) return;
   rv.current = null; // ignore double taps while writing
   const now = Date.now();
-  const relearning = rv.relearning;
-  const undo = { card, relearning, relearn: rv.relearn.slice(), reviewId: null };
+  const settings = await getSettings();
+  const undo = { card, list: rv.list ? rv.list.slice() : null, reviewId: null };
   const free = rv.free;
   const weight = nextWeight(card, q);
-  // A relearn answer is logged but does not reschedule: the card keeps the date SM-2 gave it.
-  // A free answer only changes the card's weight, never its SM-2 schedule.
-  const updated = relearning ? null
-    : free ? { ...card, weight }
-    : { ...card, ...sm2(card, q), weight, lastReview: now, lapses: (card.lapses || 0) + (q === 1 ? 1 : 0) };
-  const leech = updated && !free && q === 1 && updated.lapses >= LEECH && !card.suspended;
+  // A free or targeted answer only changes the card's draw weight, never its schedule.
+  const updated = free ? { ...card, weight } : { ...schedule(card, q, settings, now), weight };
+  const leech = !free && q === 1 && stateOf(card) === 'review' && updated.lapses >= LEECH && !card.suspended;
   if (leech) updated.suspended = true;
   await tx(['cards', 'reviews'], 'readwrite', (t) => {
-    if (updated) onReq(t.objectStore('cards').put(updated));
-    onReq(t.objectStore('reviews').add({ cardId: card.id, kind: free ? 'free' : 'review', rating: q, correct: q > 1, wasNew: !free && !relearning && !card.lastReview, createdAt: now }), (id) => { undo.reviewId = id; });
+    onReq(t.objectStore('cards').put(updated));
+    onReq(t.objectStore('reviews').add({ cardId: card.id, kind: free ? 'free' : 'review', rating: q, correct: q > 1, wasNew: !free && stateOf(card) === 'new', createdAt: now }), (id) => { undo.reviewId = id; });
   });
-  rv.relearn = rv.relearn.filter((id) => id !== card.id);
-  if (q === 1 && !free) rv.relearn.push(card.id);
+  if (rv.list) { rv.list = rv.list.filter((id) => id !== card.id); if (q === 1) rv.list.push(card.id); }
   rv.undo = undo;
   rv.force = null;
   rv.pick = null;
@@ -894,17 +1053,211 @@ async function undoRating() {
   if (!u) return;
   rv.undo = null;
   await tx(['cards', 'reviews'], 'readwrite', (t) => {
-    if (!u.relearning) onReq(t.objectStore('cards').put(u.card));
+    onReq(t.objectStore('cards').put(u.card));
     if (u.reviewId != null) onReq(t.objectStore('reviews').delete(u.reviewId));
   });
-  rv.relearn = u.relearn;
+  rv.list = u.list;
   rv.done--;
-  rv.force = { id: u.card.id, relearning: u.relearning };
+  rv.force = u.card.id;
   rv.revealed = true;
   toast('Réponse annulée');
   await render();
 }
 function endReview() { state.review = null; render(); }
+
+/* ---------- Japanese: whiteboard, handwriting practice and scoring ---------- */
+const isJapanese = (subject) => !!subject && norm(subject.name).includes('japon');
+const JP_FONT = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", "Noto Sans JP", sans-serif';
+const padHTML = () => `<div class="pad-wrap"><canvas class="pad"></canvas>
+  <div class="btn-row" style="margin:8px 0 0"><button class="btn" data-a="padUndo">Annuler le trait</button><button class="btn" data-a="padClear">Effacer</button></div></div>`;
+/* Draws text centred and scaled to fill most of a w x h canvas context (used for the answer ghost and scoring). */
+function drawFitted(ctx, text, w, h, color) {
+  let size = h * 0.8;
+  ctx.font = `${size}px ${JP_FONT}`;
+  const tw = ctx.measureText(text).width;
+  if (tw > w * 0.9) { size *= (w * 0.9) / tw; ctx.font = `${size}px ${JP_FONT}`; }
+  ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, h / 2);
+}
+/* Finger drawing on a canvas. strokes (array of [x,y] lists in 0..1) lives in the caller's state so the
+   drawing survives re-renders. ghost: text drawn faintly underneath (the expected answer). */
+function createPad(canvas, strokes, ghost = '') {
+  const ctx = canvas.getContext('2d');
+  const r0 = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(r0.width * dpr));
+  canvas.height = Math.max(1, Math.round(r0.height * dpr));
+  const redraw = () => {
+    const w = canvas.width; const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (ghost) { ctx.globalAlpha = 0.22; drawFitted(ctx, ghost, w, h, getComputedStyle(canvas).getPropertyValue('--accent') || '#1f3a7a'); ctx.globalAlpha = 1; }
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = getComputedStyle(canvas).color; ctx.lineWidth = w * 0.035;
+    for (const st of strokes) {
+      ctx.beginPath();
+      ctx.moveTo(st[0][0] * w, st[0][1] * h);
+      for (const [x, y] of st) ctx.lineTo(x * w, y * h);
+      if (st.length === 1) ctx.lineTo(st[0][0] * w + 0.5, st[0][1] * h); // a tap leaves a dot
+      ctx.stroke();
+    }
+  };
+  let cur = null;
+  const pt = (e) => { const r = canvas.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+  canvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* synthetic pointer */ }
+    cur = [pt(e)]; strokes.push(cur); redraw();
+  });
+  canvas.addEventListener('pointermove', (e) => { if (cur) { cur.push(pt(e)); redraw(); } });
+  const end = () => { cur = null; };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+  redraw();
+  return { redraw, undo: () => { strokes.pop(); redraw(); }, clear: () => { strokes.length = 0; redraw(); }, canvas };
+}
+/* Bounding box of the ink (alpha) of a canvas, or null when empty. */
+function inkBox(src) {
+  const { width: w, height: h } = src;
+  const data = src.getContext('2d').getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (data[(y * w + x) * 4 + 3] > 64) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  }
+  return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+/* Ink of a canvas cropped to box and drawn into an N x N grid inside the rectangle (dw x dh), centred. */
+function inkMask(src, box, dw, dh, N) {
+  const cv = document.createElement('canvas'); cv.width = N; cv.height = N;
+  const c2 = cv.getContext('2d');
+  c2.drawImage(src, box.x, box.y, box.w, box.h, (N - dw) / 2, (N - dh) / 2, dw, dh);
+  const d = c2.getImageData(0, 0, N, N).data;
+  const m = new Uint8Array(N * N);
+  for (let i = 0; i < N * N; i++) m[i] = d[i * 4 + 3] > 40 ? 1 : 0;
+  return m;
+}
+/* Distance (in grid cells) from every cell to the nearest ink cell. */
+function distanceMap(m, N) {
+  const D = new Float32Array(N * N).fill(1e9);
+  const queue = [];
+  for (let i = 0; i < N * N; i++) if (m[i]) { D[i] = 0; queue.push(i); }
+  for (let h = 0; h < queue.length; h++) {
+    const i = queue[h]; const x = i % N; const y = (i / N) | 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx; const yy = y + dy;
+      if ((!dx && !dy) || xx < 0 || yy < 0 || xx >= N || yy >= N) continue;
+      const j = yy * N + xx; const nd = D[i] + (dx && dy ? 1.414 : 1);
+      if (nd < D[j]) { D[j] = nd; queue.push(j); }
+    }
+  }
+  return D;
+}
+/* Resemblance (0-100) between a drawing and the expected text. Both are normalised to the model's ink box
+   (the drawing is stretched to the model's proportions when they are close, so a wider or taller hand is
+   not punished), then we measure the share of ink lying far (> 3.5 cells of 64) from the other image, in
+   both directions: strokes that are not in the model, and parts of the model that were not drawn.
+   shortcut: compares shapes, not stroke order or direction; kanji that differ by one small part
+   (犬/大, 水/氷) score close to each other. */
+function inkSimilarity(drawCanvas, text) {
+  // A hand-drawn word is often slightly tilted: try a few small rotations and keep the best match.
+  // Work on a 256 px copy: the pad is up to ~1000 px wide on a Retina iPhone.
+  return Math.max(...[0, -0.08, 0.08, -0.16, 0.16].map((angle) => {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 256;
+    const x = c.getContext('2d');
+    x.translate(128, 128); x.rotate(angle); x.drawImage(drawCanvas, -128, -128, 256, 256);
+    return inkScore(c, text);
+  }));
+}
+function inkScore(drawCanvas, text) {
+  const N = 64;
+  const ref = document.createElement('canvas'); ref.width = 256; ref.height = 256;
+  drawFitted(ref.getContext('2d'), text, 256, 256, '#000');
+  const ba = inkBox(drawCanvas); const bb = inkBox(ref);
+  if (!ba || !bb) return 0;
+  const fit = (box) => { const k = (N * 0.9) / Math.max(box.w, box.h); return [box.w * k, box.h * k]; };
+  const [rw, rh] = fit(bb);
+  const ratio = (ba.w / ba.h) / (bb.w / bb.h);
+  const [uw, uh] = ratio > 0.6 && ratio < 1.67 ? [rw, rh] : fit(ba);
+  const a = inkMask(drawCanvas, ba, Math.max(1, uw), Math.max(1, uh), N);
+  const b = inkMask(ref, bb, rw, rh, N);
+  const Da = distanceMap(a, N); const Db = distanceMap(b, N);
+  let na = 0, nb = 0, fa = 0, fb = 0;
+  for (let i = 0; i < N * N; i++) {
+    if (a[i]) { na++; if (Db[i] > 3.5) fa++; }
+    if (b[i]) { nb++; if (Da[i] > 3.5) fb++; }
+  }
+  if (!na || !nb) return 0;
+  const far = Math.max(fa / na, fb / nb);
+  return Math.round(100 * Math.min(1, Math.max(0, 1 - far / 0.35)));
+}
+
+const PASS = 75; // resemblance counted as a success in the evaluation
+function startWriting(cfg, lib) {
+  const subjOf = new Map(lib.themes.map((t) => [t.id, t.subjectId]));
+  const [kind, idStr] = cfg.scope.split(':');
+  const id = Number(idStr);
+  const pool = lib.cards.filter((c) => !c.suspended && c.front && !hasCloze(c.front)
+    && isJapanese(lib.subjectById.get(subjOf.get(c.themeId)))
+    && (kind === 't' ? c.themeId === id : kind === 's' ? subjOf.get(c.themeId) === id : true));
+  if (!pool.length) { toast('Aucune carte dans un sujet « Japonais » ici.'); return; }
+  const items = (cfg.onlyIds ? pool.filter((c) => cfg.onlyIds.includes(c.id)) : shuffle(pool.slice())).slice(0, cfg.count).map((c) => c.id);
+  state.write = { cfg, items, i: 0, revealed: false, strokes: [], scores: [] };
+  render();
+}
+async function viewWrite(guard) {
+  const lib = await loadLibrary();
+  if (!guard()) return;
+  const w = state.write;
+  const evalMode = w.cfg.mode === 'eval';
+  const quit = () => { if (w.i >= w.items.length || !w.i || confirm('Quitter ?')) { state.write = null; render(); } };
+  if (w.i >= w.items.length) {
+    setHeader('Résultat', { back: { label: 'Quiz', fn: quit } });
+    const byId = new Map(lib.cards.map((c) => [c.id, c]));
+    const avg = w.scores.length ? Math.round(w.scores.reduce((s, x) => s + x.score, 0) / w.scores.length) : 0;
+    const weak = w.scores.filter((x) => x.score < PASS);
+    setMain(evalMode
+      ? `<div class="panel center"><div class="big">${avg} %</div><p class="muted">Ressemblance moyenne sur ${plural(w.scores.length, 'mot', 'mots')}</p></div>
+        <div class="list">${w.scores.slice().sort((x, y) => x.score - y.score).map((x) => { const c = byId.get(x.id); return c ? `<div class="row"><div class="grow"><div class="title jp">${esc(c.front)}</div><div class="sub">${esc(c.back)}</div></div><span class="pill">${x.score} %</span></div>` : ''; }).join('')}</div>
+        ${weak.length ? `<button class="btn primary block" data-a="retry">Refaire les mots sous ${PASS} %</button>` : ''}
+        <button class="btn block" style="margin-top:8px" data-a="done">Terminer</button>`
+      : `<div class="panel empty"><div class="big">✓</div><p><strong>Entraînement terminé</strong></p><p>${plural(w.items.length, 'mot', 'mots')}.</p>
+        <button class="btn primary block" data-a="again">Recommencer</button><button class="btn block" style="margin-top:8px" data-a="done">Terminer</button></div>`, {
+      done: quit,
+      again: () => startWriting({ ...w.cfg, onlyIds: null }, lib),
+      retry: () => startWriting({ ...w.cfg, onlyIds: weak.map((x) => x.id), count: weak.length }, lib),
+    });
+    return;
+  }
+  const c = lib.cards.find((x) => x.id === w.items[w.i]);
+  if (!c) { w.i++; return render(); }
+  setHeader(`${evalMode ? 'Évaluation' : 'Entraînement'} ${w.i + 1}/${w.items.length}`, { back: { label: 'Quitter', fn: quit } });
+  const score = w.revealed && evalMode ? w.scores[w.scores.length - 1].score : null;
+  const verdict = score == null ? '' : score >= 90 ? 'Très ressemblant' : score >= PASS ? 'Ressemblant' : score >= 50 ? 'À retravailler' : 'Pas encore ça';
+  const next = `<button class="btn primary block" data-a="next">${w.i + 1 < w.items.length ? 'Suivant' : 'Voir le résultat'}</button>`;
+  const main = setMain(`<div class="flash" style="min-height:120px;padding-top:44px;margin-bottom:16px"><div class="crumb">Écris en japonais</div>
+      <div class="q" style="font-size:26px">${esc(c.back)}</div>${c.reading && w.cfg.showReading ? `<div class="reading">${esc(c.reading)}</div>` : ''}</div>
+    ${padHTML()}
+    ${w.revealed
+    ? `<div class="panel center" style="margin-top:12px">${score != null ? `<div class="big">${score} %</div><p class="muted" style="margin:4px 0 8px">${verdict}</p>` : ''}
+        <div class="jp" style="font-size:56px;line-height:1.1">${esc(c.front)}</div>${c.reading ? `<div class="reading">${esc(c.reading)}</div>` : ''}${sayBtn('front')}</div>${next}`
+    : evalMode
+      ? '<button class="btn primary block" style="margin-top:12px" data-a="check">Valider</button>'
+      : '<div class="btn-row" style="margin-top:12px"><button class="btn primary" data-a="show">Afficher la réponse</button><button class="btn" data-a="next">Passer</button></div>'}`, {
+    padUndo: () => pad.undo(),
+    padClear: () => pad.clear(),
+    say: () => speak(c.front),
+    show: () => { w.revealed = true; render(); },
+    check: async () => {
+      if (!w.strokes.length) { toast('Écris d’abord le mot dans le cadre'); return; }
+      const s = inkSimilarity(pad.canvas, c.front);
+      w.scores.push({ id: c.id, score: s });
+      w.revealed = true;
+      await putOne('reviews', { cardId: c.id, kind: 'quiz', rating: null, correct: s >= PASS, wasNew: false, createdAt: Date.now() });
+      render();
+    },
+    next: () => { w.i++; w.revealed = false; w.strokes = []; render(); },
+  });
+  const pad = createPad(main.querySelector('canvas.pad'), w.strokes, w.revealed ? c.front : '');
+}
 
 /* ---------- Library ---------- */
 async function viewLibrary(guard) {
@@ -924,7 +1277,7 @@ function cardRow(c, lib, withPath) {
   const t = lib.themeById.get(c.themeId);
   const path = withPath && t ? (lib.subjectById.get(t.subjectId)?.name || '') + ' › ' + t.name + ' · ' : '';
   return `<button class="row" data-a="card" data-id="${c.id}">
-    <div class="grow"><div class="title">${esc(clozeText(c.front, true))}</div><div class="sub">${esc(path)}${esc(c.back)}</div></div>
+    <div class="grow"><div class="title">${esc(clozeText(c.front, true))}</div><div class="sub">${esc(path)}${esc(c.back)}${c.tags && c.tags.length ? ` <span class="tags">${esc(c.tags.map((t) => '#' + t).join(' '))}</span>` : ''}</div></div>
     <span class="muted small">${dueLabel(c)}</span></button>`;
 }
 const openCard = (lib) => async (d) => { await editCard(lib.cards.find((c) => c.id === +d.id)); render(); };
@@ -937,13 +1290,16 @@ function libRoot(lib) {
   const cardsPer = new Map();
   lib.cards.forEach((c) => { const s = subjOf.get(c.themeId); cardsPer.set(s, (cardsPer.get(s) || 0) + 1); });
   const main = setMain(`
-    <input class="search" type="search" placeholder="Rechercher une carte" value="${esc(state.lib.search)}" id="search">
+    <input class="search" type="search" placeholder="Rechercher une carte ou #étiquette" value="${esc(state.lib.search)}" id="search">
     <div id="results"></div>`, { subject: (d) => { state.lib.subjectId = +d.id; render(); }, card: openCard(lib), add: async () => { if (await editSubject()) render(); } });
   const results = main.querySelector('#results');
   const paint = () => {
     const q = norm(state.lib.search);
     if (q) {
-      const hits = lib.cards.filter((c) => norm(c.front + ' ' + c.back + ' ' + c.notes).includes(q)).slice(0, 100);
+      const tag = q.startsWith('#') ? q.slice(1) : null; // "#verbe" searches tags
+      const hits = lib.cards.filter((c) => (tag !== null
+        ? (c.tags || []).some((t) => norm(t).startsWith(tag))
+        : norm([c.front, c.back, c.notes, c.reading, c.example, ...(c.tags || [])].join(' ')).includes(q))).slice(0, 100);
       results.innerHTML = hits.length ? `<div class="list">${hits.map((c) => cardRow(c, lib, true)).join('')}</div>` : '<div class="empty">Aucun résultat</div>';
       return;
     }
@@ -968,6 +1324,7 @@ function libSubject(lib, subject) {
       <button class="btn primary" data-a="review">Réviser</button>
       <button class="btn" data-a="free">Révision libre</button>
       <button class="btn" data-a="quiz">Quiz</button>
+      ${isJapanese(subject) ? '<button class="btn" data-a="write">Écriture</button>' : ''}
       <button class="btn" data-a="rename">Renommer</button>
       <button class="btn danger" data-a="delete">Supprimer</button>
     </div>
@@ -979,6 +1336,7 @@ function libSubject(lib, subject) {
     add: async () => { if (await editTheme(subject.id)) render(); },
     review: () => startReview({ subjectId: subject.id }, subject.name),
     free: () => startReview({ subjectId: subject.id }, subject.name + ', libre', true),
+    write: () => { state.writeScope = 's:' + subject.id; go('quiz'); },
     quiz: () => { state.quizScope = 's:' + subject.id; go('quiz'); },
     rename: async () => { if (await editSubject(subject)) render(); },
     delete: async () => {
@@ -1062,8 +1420,23 @@ async function viewQuizSetup(guard) {
   const lib = await loadLibrary();
   if (!guard()) return;
   setHeader('Quiz');
+  const jpSubjects = lib.subjects.filter(isJapanese);
+  const wScope = state.writeScope || (jpSubjects[0] ? 's:' + jpSubjects[0].id : '');
+  const writing = jpSubjects.length ? `<div class="section-title">Écriture (japonais)</div><div class="panel">
+      <label class="field"><span>Cartes</span><select id="wr-scope">${jpSubjects.map((s) => `<option value="s:${s.id}"${wScope === 's:' + s.id ? ' selected' : ''}>${esc(s.name)} (tout)</option>${
+        lib.themes.filter((t) => t.subjectId === s.id).map((t) => `<option value="t:${t.id}"${wScope === 't:' + t.id ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}`).join('')}</select></label>
+      <label class="field"><span>Mode</span><select id="wr-mode"><option value="train">Entraînement libre</option><option value="eval">Évaluation (% de ressemblance)</option></select></label>
+      <label class="field"><span>Nombre de mots</span><select id="wr-count"><option>10</option><option>20</option><option>50</option></select></label>
+      <label class="field"><span>Aide</span><select id="wr-reading"><option value="1">Afficher la lecture (kana)</option><option value="">Sens seulement</option></select></label>
+      <p class="muted small">Le sens s’affiche, tu écris le mot au doigt dans le cadre. Efface autant que tu veux.</p>
+      <button class="btn primary block" data-a="write">Commencer l’écriture</button></div>` : '';
+  const writeHandler = { write: () => {
+    const cfg = { scope: $('#wr-scope').value, mode: $('#wr-mode').value, count: +$('#wr-count').value, showReading: !!$('#wr-reading').value };
+    state.writeScope = cfg.scope;
+    startWriting(cfg, lib);
+  } };
   if (lib.cards.length < 2) {
-    setMain('<div class="panel empty"><p>Il faut au moins 2 cartes pour lancer un quiz.</p></div>');
+    setMain('<div class="panel empty"><p>Il faut au moins 2 cartes pour lancer un quiz.</p></div>' + writing, writeHandler);
     return;
   }
   const scope = state.quizScope || 'all';
@@ -1077,7 +1450,8 @@ async function viewQuizSetup(guard) {
       <label class="field"><span>Réponse</span><select id="qz-mode"><option value="choice">4 choix</option><option value="type">Taper la réponse</option></select></label>
       <p class="muted small">Le quiz n’influence pas la planification des révisions.</p>
       <button class="btn primary block" data-a="start">Lancer le quiz</button>
-    </div>`, {
+    </div>${writing}`, {
+    ...writeHandler,
     start: () => {
       const cfg = { scope: $('#qz-scope').value, count: +$('#qz-count').value, dir: $('#qz-dir').value, mode: $('#qz-mode').value, listen: !!($('#qz-listen') && $('#qz-listen').value) };
       state.quizScope = cfg.scope;
@@ -1286,6 +1660,8 @@ async function viewSettings(guard) {
     <div class="panel">
       <label class="field"><span>Objectif quotidien (réponses)</span><input type="number" inputmode="numeric" min="1" id="goal" value="${settings.dailyGoal}"></label>
       <label class="field" style="margin:0"><span>Nouvelles cartes par jour</span><input type="number" inputmode="numeric" min="0" id="newPerDay" value="${settings.newPerDay}"></label>
+      <label class="field" style="margin:12px 0 0"><span>Algorithme</span><select id="algo"><option value="fsrs"${settings.algorithm !== 'sm2' ? ' selected' : ''}>FSRS (recommandé, s’adapte à ta mémoire)</option><option value="sm2"${settings.algorithm === 'sm2' ? ' selected' : ''}>SM-2 (ancien Anki)</option></select></label>
+      ${settings.algorithm !== 'sm2' ? `<label class="field" style="margin:12px 0 0"><span>Taux de rétention visé (plus haut = révisions plus fréquentes)</span><select id="retention">${[0.8, 0.85, 0.9, 0.95].map((x) => `<option value="${x}"${settings.retention === x ? ' selected' : ''}>${Math.round(x * 100)} %</option>`).join('')}</select></label>` : ''}
       <label class="field" style="margin:12px 0 0"><span>La journée commence à (heure, 0–23). Réviser avant compte pour la veille.</span><input type="number" inputmode="numeric" min="0" max="23" id="dayStart" value="${settings.dayStartHour}"></label>
       ${canSpeak ? `<label class="row" style="border:0;padding:12px 0 0"><div class="grow">Lire le recto automatiquement</div><input type="checkbox" id="autoplay" style="width:22px;height:22px"${settings.autoplay ? ' checked' : ''}></label>` : ''}
     </div>
@@ -1329,6 +1705,9 @@ async function viewSettings(guard) {
     await setSetting('dayStartHour', v);
     toast('Enregistré');
   };
+  main.querySelector('#algo').onchange = async (e) => { await setSetting('algorithm', e.target.value); toast('Enregistré'); render(); };
+  const ret = main.querySelector('#retention');
+  if (ret) ret.onchange = async () => { await setSetting('retention', Number(ret.value)); toast('Enregistré'); };
   const auto = main.querySelector('#autoplay');
   if (auto) auto.onchange = async () => { await setSetting('autoplay', auto.checked); toast(auto.checked ? 'Lecture automatique activée' : 'Lecture automatique désactivée'); };
 }
@@ -1348,6 +1727,7 @@ function go(tab) {
   state.tab = tab;
   state.select = null;
   if (tab !== 'quiz') state.quiz = null;
+  state.write = null;
   render();
 }
 
@@ -1461,10 +1841,10 @@ async function importBackupData(data, replace = false) {
     addAll(t, 'subjects', subjects, (s) => (s.name ? { ...s, createdAt: s.createdAt || now, updatedAt: now } : null), (subjMap) => {
       addAll(t, 'themes', themes, (th) => (subjMap.has(th.subjectId) && th.name ? { ...th, direction: DIRECTIONS.some((d) => d.value === th.direction) ? th.direction : 'front', subjectId: subjMap.get(th.subjectId), createdAt: th.createdAt || now, updatedAt: now } : null), (themeMap) => {
         addAll(t, 'cards', data.cards, (c) => {
-          if (!themeMap.has(c.themeId) || !c.front || !c.back) return null;
+          if (!themeMap.has(c.themeId) || !c.front || (!c.back && !hasCloze(String(c.front)))) return null;
           added++;
           return {
-            ...newCard(themeMap.get(c.themeId), String(c.front), String(c.back), c.notes ? String(c.notes) : ''),
+            ...newCard(themeMap.get(c.themeId), String(c.front), String(c.back || ''), c.notes ? String(c.notes) : ''),
             id: c.id,
             interval: Number(c.interval) || 0,
             repetitions: Number(c.repetitions) || 0,
@@ -1476,6 +1856,13 @@ async function importBackupData(data, replace = false) {
             suspended: !!c.suspended,
             weight: Number(c.weight) > 0 ? Math.min(10, Math.max(0.1, Number(c.weight))) : undefined,
             image: isImage(c.image) ? c.image : '',
+            state: ['new', 'learning', 'review', 'relearning'].includes(c.state) ? c.state : undefined,
+            step: Number(c.step) || 0,
+            stability: Number(c.stability) > 0 ? Number(c.stability) : undefined,
+            difficulty: Number(c.difficulty) >= 1 && Number(c.difficulty) <= 10 ? Number(c.difficulty) : undefined,
+            reading: typeof c.reading === 'string' ? c.reading : '',
+            example: typeof c.example === 'string' ? c.example : '',
+            tags: Array.isArray(c.tags) ? parseTags(c.tags.filter((x) => typeof x === 'string').join(' ')) : [],
           };
         }, (cardMap) => {
           addAll(t, 'reviews', reviews, (r) => (cardMap.has(r.cardId) ? { ...r, cardId: cardMap.get(r.cardId) } : null), () => {});
@@ -1514,8 +1901,11 @@ const CSV_ALIASES = {
   front: ['front', 'recto', 'question', 'avant'],
   back: ['back', 'verso', 'reponse', 'answer', 'arriere'],
   notes: ['notes', 'note', 'extra'],
+  reading: ['reading', 'kana', 'lecture', 'yomi'],
+  example: ['example', 'exemple'],
+  tags: ['tags', 'tag', 'etiquettes', 'etiquette'],
 };
-const CSV_EXTRA = ['kana', 'romaji', 'kanji', 'translation', 'example'];
+const CSV_EXTRA = ['romaji', 'kanji', 'translation'];
 
 function csvToRecords(rows) {
   const header = rows[0].map(norm);
@@ -1524,7 +1914,7 @@ function csvToRecords(rows) {
   const extraCols = CSV_EXTRA.map((n) => header.indexOf(n)).filter((i) => i >= 0);
   let body = rows.slice(1);
   if (col.front < 0 || col.back < 0) { // no recognizable header: front, back, notes
-    body = rows; col.subject = -1; col.theme = -1; col.front = 0; col.back = 1; col.notes = 2;
+    body = rows; col.subject = -1; col.theme = -1; col.front = 0; col.back = 1; col.notes = 2; col.reading = -1; col.example = -1; col.tags = -1;
   }
   const get = (r, i) => (i >= 0 && i < r.length ? r[i].trim() : '');
   return body.map((r) => {
@@ -1535,6 +1925,9 @@ function csvToRecords(rows) {
       front: get(r, col.front),
       back: get(r, col.back),
       notes: [get(r, col.notes), ...extras].filter(Boolean).join(' · '),
+      reading: get(r, col.reading),
+      example: get(r, col.example),
+      tags: parseTags(get(r, col.tags)),
     };
   }).filter((r) => r.front && r.back);
 }
@@ -1577,7 +1970,7 @@ async function importRecords(records) {
       if (i >= records.length) return;
       const r = records[i];
       ensureSubject(r.subject, (sid) => ensureTheme(sid, r.theme, (tid) => {
-        onReq(t.objectStore('cards').add({ ...newCard(tid, r.front, r.back, r.notes), createdAt: now + i }), () => step(i + 1));
+        onReq(t.objectStore('cards').add({ ...newCard(tid, r.front, r.back, r.notes), reading: r.reading || '', example: r.example || '', tags: r.tags || [], createdAt: now + i }), () => step(i + 1));
       }));
     };
     step(0);
@@ -1588,11 +1981,11 @@ async function importRecords(records) {
 async function exportCSV() {
   const lib = await loadLibrary();
   const q = (v) => (/[",;\n\r]/.test(v) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v));
-  const lines = ['subject,theme,front,back,notes'];
+  const lines = ['subject,theme,front,back,notes,reading,example,tags'];
   for (const c of lib.cards) {
     const t = lib.themeById.get(c.themeId);
     const s = t ? lib.subjectById.get(t.subjectId) : null;
-    lines.push([s ? s.name : '', t ? t.name : '', c.front, c.back, c.notes || ''].map(q).join(','));
+    lines.push([s ? s.name : '', t ? t.name : '', c.front, c.back, c.notes || '', c.reading || '', c.example || '', (c.tags || []).join(' ')].map(q).join(','));
   }
   await saveFile(`anki_cartes_${stamp()}.csv`, '﻿' + lines.join('\n'), 'text/csv');
 }

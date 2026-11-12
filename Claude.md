@@ -36,11 +36,14 @@ L'ancienne version Expo / React Native est archivée sur la branche git `expo-le
 ### Fonctionnalités
 - **Accueil :** nombre de cartes à réviser, objectif quotidien, série de jours, révision par sujet, rappel de sauvegarde si la dernière date de plus de 7 jours. Met à jour la pastille de l'icône (`navigator.setAppBadge`, iOS 16.4+, nécessite l'autorisation des notifications).
 - **Cartes :** hiérarchie **Sujet → Thème → Cartes** (création, renommage, suppression en cascade, recherche). Image facultative par carte (affichée avec le recto, réduite à 800 px en JPEG). Suspension d'une carte (exclue des révisions et du quiz). Sens de révision par thème : recto→verso, verso→recto ou au hasard (une seule planification par carte). **Texte à trous** : un recto contenant `{{mot}}` affiche un blanc, le verso devient facultatif ; ces cartes posent toujours le recto. Création d'une carte au recto déjà existant : confirmation demandée. **Sélection multiple** dans un thème (« Choisir ») : déplacer, suspendre, réactiver, supprimer. L'éditeur affiche la progression et les 10 dernières réponses de la carte.
-- **Révision :** file SM-2 (cartes dues + nouvelles cartes dans la limite quotidienne), 4 boutons avec aperçu de l'intervalle, glisser à gauche = À revoir / à droite = Bon. Les cartes notées « À revoir » reviennent en fin de séance (liste en mémoire ; ces réponses sont enregistrées mais ne replanifient pas). « Annuler la dernière réponse » restaure la carte et supprime la révision. Lecture à voix haute (`speechSynthesis`, voix japonaise si le texte contient des kana/kanji).
-- **Révision libre :** toujours disponible (accueil, sujet, thème), sans fin. Tire une carte au hasard proportionnellement à son poids `weight` (jamais deux fois de suite la même). Chaque note multiplie le poids : À revoir ×2, Difficile ×1,5, Bon ×0,8, Facile ×0,5 (bornes 0,1–10). Les notes de la révision SM-2 mettent aussi le poids à jour. La révision libre **ne touche pas** la planification SM-2.
+- **Révision :** file (cartes en apprentissage dues, cartes dues, nouvelles cartes dans la limite quotidienne, puis cartes en apprentissage dues dans les 20 min), 4 boutons avec aperçu du délai (min/h/j), glisser à gauche = À revoir / à droite = Bon. **Étapes d'apprentissage** (voir §6) : une carte nouvelle ou ratée revient dans la séance. « Annuler la dernière réponse » restaure la carte et supprime la révision. Lecture à voix haute (`speechSynthesis`, voix japonaise si le texte contient des kana/kanji).
+- **Révision libre :** toujours disponible (accueil, sujet, thème), sans fin. Tire une carte au hasard proportionnellement à son poids `weight` (jamais deux fois de suite la même). Chaque note multiplie le poids : À revoir ×2, Difficile ×1,5, Bon ×0,8, Facile ×0,5 (bornes 0,1–10). Les notes de la révision normale mettent aussi le poids à jour. La révision libre **ne touche pas** la planification.
+- **Révision ciblée** (équivalent des paquets filtrés d'Anki) : portée, étiquette, critère (ratées sur 7 jours, difficiles, dues dans 3 jours, nouvelles, toutes), maximum. Chaque carte passe une fois, les « À revoir » reviennent en fin de liste ; seul le poids change.
+- **Étiquettes :** `tags` par carte (séparées par espaces, virgules ou `;`, `#` facultatif), affichées dans les listes, recherche `#etiquette`.
+- **Japonais** (sujet dont le nom contient « japon ») : l'éditeur propose Mot / Lecture (kana) / Sens / Exemple ; la réponse affiche la lecture et l'exemple. **Tableau** pour écrire au doigt pendant la révision (annuler le trait, effacer). **Écriture** (onglet Quiz ou bouton du sujet) : le sens (et la lecture si choisie) s'affiche, on écrit le mot dans un cadre ; *Entraînement libre* (afficher la réponse quand on veut, superposée au dessin) ou *Évaluation* (% de ressemblance, réussi à partir de 75 %, enregistré comme réponse de quiz).
 - **Quiz :** QCM à 4 choix ou réponse tapée (comparaison sans casse/accents/ponctuation, « a, b / c » accepte chaque partie, bouton « J'avais bon ») (distracteurs pris dans le même thème, puis le même sujet, puis partout), sens recto→verso ou inverse, « rejouer les erreurs ». Mode **à l'écoute** : la question est lue (`speechSynthesis`) et affichée seulement après la réponse. Texte à trous : question = phrase avec blancs, réponse = mots cachés. **N'influence pas** la planification SM-2.
 - **Stats :** totaux, réussite sur 7 jours, calendrier d'activité sur 17 semaines, activité sur 14 jours, prévision sur 7 jours, cartes difficiles.
-- **Réglages :** objectif quotidien, nouvelles cartes/jour, heure de début de journée, lecture automatique du recto, sauvegarde JSON, import/export CSV, effacement total.
+- **Réglages :** objectif quotidien, nouvelles cartes/jour, algorithme (FSRS par défaut ou SM-2), taux de rétention visé (FSRS), heure de début de journée, lecture automatique du recto, sauvegarde JSON, import/export CSV, effacement total.
 - **Mises à jour :** quand un nouveau Service Worker prend le contrôle, la page se recharge seule (sauf pendant une révision ou un quiz).
 
 ---
@@ -139,6 +142,13 @@ interface Flashcard {
   suspended?: boolean;      // true = exclue des révisions et du quiz
   weight?: number;          // poids de tirage en révision libre (0.1–10) ; absent = (1 + 0.5 × lapses) × 2.5 / easeFactor
   image?: string;           // data:image/... (JPEG ≤ 800 px) ; seules les URL data:image sont acceptées à l'import
+  state?: 'new' | 'learning' | 'review' | 'relearning'; // absent = déduit (lastReview null → new, sinon review)
+  step?: number;            // étape d'apprentissage en cours
+  stability?: number;       // FSRS : jours avant que le rappel tombe à 90 %
+  difficulty?: number;      // FSRS : 1–10
+  reading?: string;         // japonais : lecture en kana
+  example?: string;         // japonais : phrase d'exemple
+  tags?: string[];
 }
 
 interface Review {          // Historique : révisions SM-2, révision libre ET réponses de quiz
@@ -165,9 +175,15 @@ interface Review {          // Historique : révisions SM-2, révision libre ET 
 
 ---
 
-## 6. Algorithme de répétition espacée (SM-2)
+## 6. Planification : étapes d'apprentissage + FSRS (défaut) ou SM-2
 
-Le moteur implémente l'algorithme standard SuperMemo 2 avec 4 niveaux d'évaluation :
+`schedule(card, q, settings)` gère tout :
+- **Étapes** (en minutes, comme Anki) : nouvelles cartes `LEARN_STEPS = [1, 10]`, cartes oubliées `RELEARN_STEPS = [10]`. À revoir → 1re étape ; Difficile → reste sur l'étape (moyenne avec la suivante) ; Bon → étape suivante, puis passage en révision ; Facile → passage direct en révision.
+- **FSRS-4.5** (paramètres par défaut publiés) : stabilité S et difficulté D mises à jour à la première réponse d'une carte nouvelle et à chaque révision ; intervalle = jours pour que la probabilité de rappel atteigne la rétention visée (90 % par défaut) ; ordre garanti Difficile ≤ Bon < Facile. Une carte venant de SM-2 démarre avec S = intervalle et D déduite de la facilité.
+- **SM-2** (option) : formules ci-dessous ; passage en révision à 1 jour (Facile : 4 jours).
+- Les dates en jours tombent au début de la journée d'étude.
+
+SM-2 avec 4 niveaux d'évaluation :
 
 ### Correspondance des notes
 | Action | Note ($q$) | Comportement |
@@ -215,7 +231,7 @@ Le moteur implémente l'algorithme standard SuperMemo 2 avec 4 niveaux d'évalua
 
 - **Exportation JSON :** Lire tous les stores et produire `{ app: 'anki-local', version: 1, exportedAt, subjects, themes, cards, reviews, settings }` dans un `Blob`, partagé via la feuille de partage iOS (`navigator.share`) ou téléchargé (`anki_backup_YYYY-MM-DD.json`).
 - **Importation JSON :** Lire le fichier via `FileReader`. Supprimer les `id` existants pour éviter les collisions, puis insérer sujets → thèmes → cartes → historique **dans une transaction atomique unique**, en re-mappant `subjectId`, `themeId` et `cardId` vers les nouvelles clés. L'utilisateur choisit **Ajouter** (aux données existantes) ou **Remplacer** : les 4 stores sont vidés dans la même transaction, et les réglages du fichier sont appliqués (clés connues et de type valide uniquement, sauf `lastBackup`). Un ancien export au format « tableau de `Flashcard` » est accepté et rangé dans le sujet « Importé › Général ».
-- **CSV :** séparateur `,`, `;` ou tabulation détecté automatiquement. En-têtes reconnus : `subject`/`sujet`, `theme`, `front`/`recto`/`question`, `back`/`verso`/`reponse`, `notes`. Les colonnes `kana`, `romaji`, `kanji`, `translation`, `example` sont ajoutées aux notes. Sans en-tête reconnu : `front, back, notes`. Les sujets/thèmes manquants sont créés par nom. Les cartes dont recto + verso (normalisés) existent déjà, en base ou plus haut dans le fichier, sont ignorées et comptées comme doublons.
+- **CSV :** séparateur `,`, `;` ou tabulation détecté automatiquement. En-têtes reconnus : `subject`/`sujet`, `theme`, `front`/`recto`/`question`, `back`/`verso`/`reponse`, `notes`, `kana`/`reading`/`lecture`, `example`/`exemple`, `tags`/`etiquettes`. Les colonnes `romaji`, `kanji`, `translation` sont ajoutées aux notes. L'export écrit `subject,theme,front,back,notes,reading,example,tags`. Sans en-tête reconnu : `front, back, notes`. Les sujets/thèmes manquants sont créés par nom. Les cartes dont recto + verso (normalisés) existent déjà, en base ou plus haut dans le fichier, sont ignorées et comptées comme doublons.
 
 ---
 
