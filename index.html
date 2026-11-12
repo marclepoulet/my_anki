@@ -41,7 +41,8 @@ html, body {
 }
 input, textarea, select { user-select: text; -webkit-user-select: text; font: inherit; font-size: 16px; color: var(--text); }
 button { font: inherit; color: inherit; touch-action: manipulation; cursor: pointer; }
-#app { display: flex; flex-direction: column; height: 100%; }
+/* Pinned to the screen edges: in iOS home-screen mode, height:100% can stop short of the bottom and leave a gap. */
+#app { position: fixed; inset: 0; display: flex; flex-direction: column; }
 
 .top {
   display: flex; align-items: center; gap: 8px; min-height: 44px;
@@ -55,7 +56,7 @@ main {
 }
 .tabs {
   display: flex; background: var(--surface); border-top: 1px solid var(--line);
-  padding: 4px calc(env(safe-area-inset-right) + 4px) calc(env(safe-area-inset-bottom) + 4px) calc(env(safe-area-inset-left) + 4px);
+  padding: 4px calc(env(safe-area-inset-right) + 4px) max(6px, env(safe-area-inset-bottom)) calc(env(safe-area-inset-left) + 4px);
 }
 .tabs button {
   flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
