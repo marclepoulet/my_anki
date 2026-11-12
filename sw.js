@@ -1,6 +1,6 @@
 // Service Worker — Cache-First with network fallback.
 // Bump CACHE_NAME on every asset change so iPhones pick up the new version.
-const CACHE_NAME = 'anki-local-v7';
+const CACHE_NAME = 'anki-local-v8';
 const ASSETS = [
   './',
   './index.html',
@@ -12,7 +12,11 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // cache: 'reload' bypasses the browser HTTP cache (GitHub Pages sends max-age=600); without it a new
+  // version could precache the previous index.html and stay stuck on it.
+  event.waitUntil(caches.open(CACHE_NAME)
+    .then((cache) => cache.addAll(ASSETS.map((url) => new Request(url, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
