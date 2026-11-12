@@ -347,7 +347,7 @@ function newCard(themeId, front, back, notes) {
   return { themeId, front, back, notes: notes || '', interval: 0, repetitions: 0, easeFactor: 2.5, dueDate: now, createdAt: now, lastReview: null, lapses: 0 };
 }
 function resetProgress(card) {
-  return { ...card, interval: 0, repetitions: 0, easeFactor: 2.5, dueDate: Date.now(), lastReview: null, lapses: 0 };
+  return { ...card, interval: 0, repetitions: 0, easeFactor: 2.5, dueDate: Date.now(), lastReview: null, lapses: 0, weight: undefined };
 }
 
 function deleteCardsOfTheme(t, themeId) {
@@ -393,6 +393,20 @@ async function buildQueue(scope) {
     .sort((a, b) => a.createdAt - b.createdAt)
     .slice(0, Math.max(0, settings.newPerDay - newToday));
   return { queue: learned.concat(fresh), learned: learned.length, fresh: fresh.length };
+}
+
+/* Free review: any card can come up, drawn at random in proportion to its weight.
+   Each answer multiplies the weight (hard cards come up more, easy ones less). */
+const WEIGHT_FACTOR = { 1: 2, 2: 1.5, 3: 0.8, 4: 0.5 };
+const FREE_HINT = { 1: 'bien plus souvent', 2: 'plus souvent', 3: 'moins souvent', 4: 'rarement' };
+// Cards without a weight yet start from their SM-2 history: more lapses or a lower ease = heavier.
+const weightOf = (c) => c.weight ?? Math.round((1 + (c.lapses || 0) * 0.5) * (2.5 / (c.easeFactor || 2.5)) * 100) / 100;
+const nextWeight = (c, q) => Math.min(10, Math.max(0.1, Math.round(weightOf(c) * WEIGHT_FACTOR[q] * 100) / 100));
+function pickWeighted(cards, avoidId) {
+  const pool = cards.length > 1 ? cards.filter((c) => c.id !== avoidId) : cards; // never the same card twice in a row
+  let r = Math.random() * pool.reduce((s, c) => s + weightOf(c), 0);
+  for (const c of pool) { r -= weightOf(c); if (r < 0) return c; }
+  return pool[pool.length - 1] || null;
 }
 
 /* ============================================================
@@ -648,7 +662,10 @@ async function viewHome(guard) {
       <div class="q">${queue.length ? plural(queue.length, 'fiche', 'fiches') : 'Pile vide'}</div>
       <div class="notes">${queue.length ? `${plural(learned, 'à revoir', 'à revoir')}, ${plural(fresh, 'nouvelle', 'nouvelles')}` : 'Tout est révisé pour aujourd’hui.'}</div>
     </div>
-    <button class="btn primary block" style="margin-bottom:16px" data-a="start" ${queue.length ? '' : 'disabled'}>Commencer la révision</button>
+    <div class="btn-row" style="margin-bottom:16px">
+      <button class="btn primary" data-a="start" ${queue.length ? '' : 'disabled'}>Commencer la révision</button>
+      <button class="btn${queue.length ? '' : ' primary'}" data-a="free">Révision libre</button>
+    </div>
     ${now - settings.lastBackup > 7 * DAY ? `<div class="panel">
       <p style="margin:0 0 10px"><strong>${settings.lastBackup ? `Dernière sauvegarde il y a ${plural(Math.floor((now - settings.lastBackup) / DAY), 'jour', 'jours')}.` : 'Aucune sauvegarde pour l’instant.'}</strong>
       <span class="muted">iOS peut effacer les données d’une web app peu utilisée.</span></p>
@@ -665,6 +682,7 @@ async function viewHome(guard) {
         <span class="chev">›</span>
       </button>`).join('')}</div>`, {
     start: () => startReview(null, 'Révision'),
+    free: () => startReview(null, 'Révision libre', true),
     backup: exportBackup,
     subject: (d) => { const s = lib.subjectById.get(+d.id); startReview({ subjectId: s.id }, s.name); },
   });
@@ -682,28 +700,35 @@ function streakOf(reviews) {
 /* ---------- Review session ----------
    Cards rated "À revoir" come back at the end of the session (relearn list, session only:
    their schedule was already set by SM-2). The last answer can be undone once. */
-async function startReview(scope, label) {
-  state.review = { scope, label, done: 0, revealed: false, current: null, relearning: false, remaining: 0, relearn: [], undo: null, force: null };
+async function startReview(scope, label, free = false) {
+  state.review = { scope, label, free, done: 0, revealed: false, current: null, relearning: false, remaining: 0, relearn: [], undo: null, force: null, pick: null, lastId: null };
   await render();
 }
 async function viewReview(guard) {
   const rv = state.review;
-  const [{ queue }, lib] = await Promise.all([buildQueue(rv.scope), loadLibrary()]);
+  const [{ queue }, lib] = await Promise.all([rv.free ? { queue: [] } : buildQueue(rv.scope), loadLibrary()]);
   if (!guard()) return;
   const byId = new Map(lib.cards.map((c) => [c.id, c]));
   rv.relearn = rv.relearn.filter((id) => byId.has(id) && !byId.get(id).suspended);
   let c = null;
   let relearning = false;
-  if (rv.force && byId.has(rv.force.id) && !byId.get(rv.force.id).suspended) { c = byId.get(rv.force.id); relearning = rv.force.relearning; }
+  const usable = (id) => byId.has(id) && !byId.get(id).suspended;
+  if (rv.force && usable(rv.force.id)) { c = byId.get(rv.force.id); relearning = rv.force.relearning; }
+  else if (rv.free) {
+    const pool = lib.cards.filter((x) => !x.suspended).filter(scopeFilter(rv.scope, lib.themes));
+    c = usable(rv.pick) ? byId.get(rv.pick) : pickWeighted(pool, rv.lastId); // pick stays fixed until answered
+    rv.pick = c ? c.id : null;
+    rv.remaining = pool.length;
+  }
   else if (queue.length) c = queue[0];
   else if (rv.relearn.length) { c = byId.get(rv.relearn[0]); relearning = true; }
   rv.current = c;
   rv.relearning = relearning;
-  rv.remaining = queue.length + rv.relearn.length;
-  setHeader(rv.label, { back: { label: 'Terminer', fn: endReview }, actions: c ? [{ label: String(rv.remaining), aria: 'Cartes restantes', fn: () => {} }] : [] });
+  if (!rv.free) rv.remaining = queue.length + rv.relearn.length;
+  setHeader(rv.label, { back: { label: 'Terminer', fn: endReview }, actions: c && !rv.free ? [{ label: String(rv.remaining), aria: 'Cartes restantes', fn: () => {} }] : [] });
   const undoLink = rv.undo ? '<button class="link small" data-a="undo">Annuler la dernière réponse</button>' : '';
   if (!c) {
-    setMain(`<div class="panel empty"><div class="big">✓</div><p><strong>Session terminée</strong></p><p>${plural(rv.done, 'réponse', 'réponses')}.</p>
+    setMain(`<div class="panel empty"><div class="big">✓</div><p><strong>${rv.free ? 'Aucune carte à réviser ici' : 'Session terminée'}</strong></p><p>${plural(rv.done, 'réponse', 'réponses')}.</p>
       <button class="btn primary block" data-a="end">Retour</button><div style="margin-top:8px">${undoLink}</div></div>`, { end: endReview, undo: undoRating });
     return;
   }
@@ -722,7 +747,7 @@ async function viewReview(guard) {
   const answerHTML = rv.revealed ? `<hr>${face(aSide, 'a')}${c.notes ? `<div class="notes">${esc(c.notes)}</div>` : ''}` : '';
   const ratings = relearning
     ? [{ q: 1, label: 'À revoir', sub: 'encore' }, { q: 3, label: 'Bon', sub: fmtInterval(Math.max(1, Math.ceil((c.dueDate - Date.now()) / DAY))) }]
-    : RATINGS.map((r) => ({ ...r, sub: fmtInterval(sm2(c, r.q).interval) }));
+    : RATINGS.map((r) => ({ ...r, sub: rv.free ? FREE_HINT[r.q] : fmtInterval(sm2(c, r.q).interval) }));
   const controls = rv.revealed
     ? `<div class="answers"${relearning ? ' style="grid-template-columns:1fr 1fr"' : ''}>${ratings.map((r) => `<button class="r${r.q}" data-a="rate" data-q="${r.q}">${r.label}<small>${r.sub}</small></button>`).join('')}</div>
        <p class="muted small center" style="margin:8px 0 0">Glisse la fiche à gauche pour « À revoir », à droite pour « Bon ».</p>`
@@ -771,16 +796,23 @@ async function rateCard(q) {
   const now = Date.now();
   const relearning = rv.relearning;
   const undo = { card, relearning, relearn: rv.relearn.slice(), reviewId: null };
+  const free = rv.free;
+  const weight = nextWeight(card, q);
   // A relearn answer is logged but does not reschedule: the card keeps the date SM-2 gave it.
-  const updated = relearning ? null : { ...card, ...sm2(card, q), lastReview: now, lapses: (card.lapses || 0) + (q === 1 ? 1 : 0) };
+  // A free answer only changes the card's weight, never its SM-2 schedule.
+  const updated = relearning ? null
+    : free ? { ...card, weight }
+    : { ...card, ...sm2(card, q), weight, lastReview: now, lapses: (card.lapses || 0) + (q === 1 ? 1 : 0) };
   await tx(['cards', 'reviews'], 'readwrite', (t) => {
     if (updated) onReq(t.objectStore('cards').put(updated));
-    onReq(t.objectStore('reviews').add({ cardId: card.id, kind: 'review', rating: q, correct: q > 1, wasNew: !relearning && !card.lastReview, createdAt: now }), (id) => { undo.reviewId = id; });
+    onReq(t.objectStore('reviews').add({ cardId: card.id, kind: free ? 'free' : 'review', rating: q, correct: q > 1, wasNew: !free && !relearning && !card.lastReview, createdAt: now }), (id) => { undo.reviewId = id; });
   });
   rv.relearn = rv.relearn.filter((id) => id !== card.id);
-  if (q === 1) rv.relearn.push(card.id);
+  if (q === 1 && !free) rv.relearn.push(card.id);
   rv.undo = undo;
   rv.force = null;
+  rv.pick = null;
+  rv.lastId = card.id;
   rv.done++;
   rv.revealed = false;
   await render(); // queue is rebuilt from IndexedDB
@@ -863,6 +895,7 @@ function libSubject(lib, subject) {
   setMain(`
     <div class="btn-row">
       <button class="btn primary" data-a="review">Réviser</button>
+      <button class="btn" data-a="free">Révision libre</button>
       <button class="btn" data-a="quiz">Quiz</button>
       <button class="btn" data-a="rename">Renommer</button>
       <button class="btn danger" data-a="delete">Supprimer</button>
@@ -874,6 +907,7 @@ function libSubject(lib, subject) {
     theme: (d) => { state.lib.themeId = +d.id; render(); },
     add: async () => { if (await editTheme(subject.id)) render(); },
     review: () => startReview({ subjectId: subject.id }, subject.name),
+    free: () => startReview({ subjectId: subject.id }, subject.name + ', libre', true),
     quiz: () => { state.quizScope = 's:' + subject.id; go('quiz'); },
     rename: async () => { if (await editSubject(subject)) render(); },
     delete: async () => {
@@ -890,6 +924,7 @@ function libTheme(lib, subject, theme) {
   setMain(`
     <div class="btn-row">
       <button class="btn primary" data-a="review">Réviser</button>
+      <button class="btn" data-a="free">Révision libre</button>
       <button class="btn" data-a="quiz">Quiz</button>
       <button class="btn" data-a="rename">Modifier</button>
       <button class="btn danger" data-a="delete">Supprimer</button>
@@ -900,6 +935,7 @@ function libTheme(lib, subject, theme) {
     card: openCard(lib),
     add,
     review: () => startReview({ themeId: theme.id }, theme.name),
+    free: () => startReview({ themeId: theme.id }, theme.name + ', libre', true),
     quiz: () => { state.quizScope = 't:' + theme.id; go('quiz'); },
     rename: async () => { if (await editTheme(subject.id, theme)) render(); },
     delete: async () => {
@@ -1291,6 +1327,7 @@ async function importBackupData(data) {
             lastReview: c.lastReview ? Number(c.lastReview) : (Number(c.repetitions) > 0 ? now : null),
             lapses: Number(c.lapses) || 0,
             suspended: !!c.suspended,
+            weight: Number(c.weight) > 0 ? Math.min(10, Math.max(0.1, Number(c.weight))) : undefined,
             image: isImage(c.image) ? c.image : '',
           };
         }, (cardMap) => {

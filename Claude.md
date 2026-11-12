@@ -37,6 +37,7 @@ L'ancienne version Expo / React Native est archivée sur la branche git `expo-le
 - **Accueil :** nombre de cartes à réviser, objectif quotidien, série de jours, révision par sujet, rappel de sauvegarde si la dernière date de plus de 7 jours. Met à jour la pastille de l'icône (`navigator.setAppBadge`, iOS 16.4+, nécessite l'autorisation des notifications).
 - **Cartes :** hiérarchie **Sujet → Thème → Cartes** (création, renommage, suppression en cascade, recherche). Image facultative par carte (affichée avec le recto, réduite à 800 px en JPEG). Suspension d'une carte (exclue des révisions et du quiz). Sens de révision par thème : recto→verso, verso→recto ou au hasard (une seule planification par carte).
 - **Révision :** file SM-2 (cartes dues + nouvelles cartes dans la limite quotidienne), 4 boutons avec aperçu de l'intervalle, glisser à gauche = À revoir / à droite = Bon. Les cartes notées « À revoir » reviennent en fin de séance (liste en mémoire ; ces réponses sont enregistrées mais ne replanifient pas). « Annuler la dernière réponse » restaure la carte et supprime la révision. Lecture à voix haute (`speechSynthesis`, voix japonaise si le texte contient des kana/kanji).
+- **Révision libre :** toujours disponible (accueil, sujet, thème), sans fin. Tire une carte au hasard proportionnellement à son poids `weight` (jamais deux fois de suite la même). Chaque note multiplie le poids : À revoir ×2, Difficile ×1,5, Bon ×0,8, Facile ×0,5 (bornes 0,1–10). Les notes de la révision SM-2 mettent aussi le poids à jour. La révision libre **ne touche pas** la planification SM-2.
 - **Quiz :** QCM à 4 choix ou réponse tapée (comparaison sans casse/accents/ponctuation, « a, b / c » accepte chaque partie, bouton « J'avais bon ») (distracteurs pris dans le même thème, puis le même sujet, puis partout), sens recto→verso ou inverse, « rejouer les erreurs ». **N'influence pas** la planification SM-2.
 - **Stats :** totaux, réussite sur 7 jours, calendrier d'activité sur 17 semaines, activité sur 14 jours, prévision sur 7 jours, cartes difficiles.
 - **Réglages :** objectif quotidien, nouvelles cartes/jour, sauvegarde JSON, import/export CSV, effacement total.
@@ -135,13 +136,14 @@ interface Flashcard {
   lastReview: number | null; // null = carte nouvelle (jamais révisée)
   lapses: number;           // Nombre de « À revoir »
   suspended?: boolean;      // true = exclue des révisions et du quiz
+  weight?: number;          // poids de tirage en révision libre (0.1–10) ; absent = (1 + 0.5 × lapses) × 2.5 / easeFactor
   image?: string;           // data:image/... (JPEG ≤ 800 px) ; seules les URL data:image sont acceptées à l'import
 }
 
-interface Review {          // Historique : révisions SM-2 ET réponses de quiz
+interface Review {          // Historique : révisions SM-2, révision libre ET réponses de quiz
   id?: number;
   cardId: number;
-  kind: 'review' | 'quiz';
+  kind: 'review' | 'free' | 'quiz';
   rating: 1 | 2 | 3 | 4 | null; // null pour un quiz
   correct: boolean;
   wasNew: boolean;          // sert à appliquer la limite « nouvelles cartes / jour »

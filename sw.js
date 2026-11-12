@@ -1,6 +1,6 @@
 // Service Worker — Cache-First with network fallback.
 // Bump CACHE_NAME on every asset change so iPhones pick up the new version.
-const CACHE_NAME = 'anki-local-v3';
+const CACHE_NAME = 'anki-local-v4';
 const ASSETS = [
   './',
   './index.html',
