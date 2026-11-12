@@ -34,11 +34,11 @@ Un système de répétition espacée (SRS) sans dépendance et 100 % local, con�
 L'ancienne version Expo / React Native est archivée sur la branche git `expo-legacy`.
 
 ### Fonctionnalités
-- **Accueil :** nombre de cartes à réviser, objectif quotidien, série de jours, révision par sujet.
-- **Cartes :** hiérarchie **Sujet → Thème → Cartes** (création, renommage, suppression en cascade, recherche).
-- **Révision :** file SM-2 (cartes dues + nouvelles cartes dans la limite quotidienne), 4 boutons avec aperçu de l'intervalle.
-- **Quiz :** QCM à 4 choix (distracteurs pris dans le même thème, puis le même sujet, puis partout), sens recto→verso ou inverse, « rejouer les erreurs ». **N'influence pas** la planification SM-2.
-- **Stats :** totaux, réussite sur 7 jours, activité sur 14 jours, prévision sur 7 jours, cartes difficiles.
+- **Accueil :** nombre de cartes à réviser, objectif quotidien, série de jours, révision par sujet, rappel de sauvegarde si la dernière date de plus de 7 jours. Met à jour la pastille de l'icône (`navigator.setAppBadge`, iOS 16.4+, nécessite l'autorisation des notifications).
+- **Cartes :** hiérarchie **Sujet → Thème → Cartes** (création, renommage, suppression en cascade, recherche). Image facultative par carte (affichée avec le recto, réduite à 800 px en JPEG). Suspension d'une carte (exclue des révisions et du quiz). Sens de révision par thème : recto→verso, verso→recto ou au hasard (une seule planification par carte).
+- **Révision :** file SM-2 (cartes dues + nouvelles cartes dans la limite quotidienne), 4 boutons avec aperçu de l'intervalle, glisser à gauche = À revoir / à droite = Bon. Les cartes notées « À revoir » reviennent en fin de séance (liste en mémoire ; ces réponses sont enregistrées mais ne replanifient pas). « Annuler la dernière réponse » restaure la carte et supprime la révision. Lecture à voix haute (`speechSynthesis`, voix japonaise si le texte contient des kana/kanji).
+- **Quiz :** QCM à 4 choix ou réponse tapée (comparaison sans casse/accents/ponctuation, « a, b / c » accepte chaque partie, bouton « J'avais bon ») (distracteurs pris dans le même thème, puis le même sujet, puis partout), sens recto→verso ou inverse, « rejouer les erreurs ». **N'influence pas** la planification SM-2.
+- **Stats :** totaux, réussite sur 7 jours, calendrier d'activité sur 17 semaines, activité sur 14 jours, prévision sur 7 jours, cartes difficiles.
 - **Réglages :** objectif quotidien, nouvelles cartes/jour, sauvegarde JSON, import/export CSV, effacement total.
 
 ---
@@ -119,7 +119,7 @@ Ne pas utiliser `localStorage` ou `sessionStorage` (limités à ~5 Mo et vulnér
 ### Modèle de données
 ```typescript
 interface Subject { id?: number; name: string; createdAt: number; updatedAt: number; }
-interface Theme   { id?: number; subjectId: number; name: string; createdAt: number; updatedAt: number; }
+interface Theme   { id?: number; subjectId: number; name: string; direction?: 'front' | 'back' | 'mixed'; createdAt: number; updatedAt: number; }
 
 interface Flashcard {
   id?: number;              // Clé primaire auto-générée
@@ -134,6 +134,8 @@ interface Flashcard {
   createdAt: number;
   lastReview: number | null; // null = carte nouvelle (jamais révisée)
   lapses: number;           // Nombre de « À revoir »
+  suspended?: boolean;      // true = exclue des révisions et du quiz
+  image?: string;           // data:image/... (JPEG ≤ 800 px) ; seules les URL data:image sont acceptées à l'import
 }
 
 interface Review {          // Historique : révisions SM-2 ET réponses de quiz
@@ -146,7 +148,8 @@ interface Review {          // Historique : révisions SM-2 ET réponses de quiz
   createdAt: number;
 }
 
-// settings : { key: 'dailyGoal', value: 20 }, { key: 'newPerDay', value: 20 }
+// settings : { key: 'dailyGoal', value: 20 }, { key: 'newPerDay', value: 20 }, { key: 'lastBackup', value: 0 } (timestamp du dernier export JSON)
+// Les champs facultatifs ci-dessus ne nécessitent pas de migration (pas de nouvel index) : DB_VERSION reste 1.
 ```
 
 - Supprimer un sujet supprime ses thèmes et leurs cartes ; supprimer un thème supprime ses cartes (dans une seule transaction). L'historique `reviews` est conservé.
@@ -172,7 +175,8 @@ Le moteur implémente l'algorithme standard SuperMemo 2 avec 4 niveaux d'évalua
 
 ### Formules
 1. **Ajustement du facteur d'aisance ($EF'$) :**
-   $$EF' = EF + (0.1 - (5 - q) \times (0.08 + (5 - q) \times 0.02))$$
+   $$EF' = EF + (0.1 - (5 - g) \times (0.08 + (5 - g) \times 0.02)), \quad g = q + 1$$
+   Les boutons 1–4 correspondent aux notes SM-2 2–5 : À revoir −0,32, Difficile −0,14, Bon ±0, Facile +0,1.
    *Plancher :* Si $EF' < 1.3$, définir à $1.3$.
 
 2. **Calcul de l'intervalle ($I$ en jours) :**

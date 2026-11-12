@@ -126,6 +126,18 @@ main {
 .flash .notes { font-size: 17px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; margin-top: 10px; }
 .flash hr { border: 0; margin: 18px 0; }
 .flash .crumb { position: absolute; top: 14px; left: 20px; right: 20px; text-align: left; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flash img { display: block; max-width: 100%; max-height: 220px; margin: 12px auto 0; border-radius: 2px; }
+.flash.swipe { touch-action: pan-y; }
+.say { border: 0; background: none; color: var(--muted); min-width: 44px; min-height: 40px; margin: 2px auto 0; display: inline-flex; align-items: center; justify-content: center; }
+.say svg { width: 22px; height: 22px; }
+.center { text-align: center; }
+.heat { display: grid; grid-template-rows: repeat(7, 1fr); grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; margin-top: 10px; }
+.heat i { aspect-ratio: 1; border-radius: 2px; background: var(--line); }
+.heat .l1 { background: var(--accent); opacity: .3; } .heat .l2 { background: var(--accent); opacity: .5; }
+.heat .l3 { background: var(--accent); opacity: .75; } .heat .l4 { background: var(--accent); }
+.imgpick { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.imgpick img { max-height: 90px; max-width: 120px; border-radius: 4px; }
+.imgpick input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .flash.flip { animation: flip .32s ease-out; }
 @keyframes flip { from { transform: perspective(900px) rotateX(70deg); opacity: .4; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .flash.flip { animation: none; } }
@@ -193,12 +205,52 @@ function stack(n) {
   return 'box-shadow:' + s.join(',');
 }
 
+/* Text-to-speech (works offline on iOS). Japanese text gets a Japanese voice, everything else French. */
+const canSpeak = 'speechSynthesis' in window;
+function speak(text) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = /[぀-ヿ㐀-鿿]/.test(text) ? 'ja-JP' : 'fr-FR';
+  speechSynthesis.speak(u);
+}
+const sayBtn = (side) => canSpeak
+  ? `<div><button class="say" data-a="say" data-side="${side}" aria-label="Lire à voix haute"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg></button></div>`
+  : '';
+// Only data:image URLs are ever rendered (images come from backups, a trust boundary).
+const isImage = (s) => typeof s === 'string' && /^data:image\/(jpeg|png|gif|webp);base64,/.test(s);
+const imgHTML = (src) => (isImage(src) ? `<img src="${esc(src)}" alt="">` : '');
+/* Downscales a picked photo to ≤ 800 px JPEG so cards and backups stay small. */
+function readImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 800 / Math.max(img.naturalWidth, img.naturalHeight));
+      const cv = document.createElement('canvas');
+      cv.width = Math.max(1, Math.round(img.naturalWidth * k));
+      cv.height = Math.max(1, Math.round(img.naturalHeight * k));
+      const ctx = cv.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(url);
+      resolve(cv.toDataURL('image/jpeg', 0.8));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image illisible')); };
+    img.src = url;
+  });
+}
+function updateBadge(n) {
+  if (!('setAppBadge' in navigator)) return;
+  (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
+}
+
 function fmtInterval(days) {
   if (days < 30) return days + ' j';
   if (days < 365) return Math.round(days / 30) + ' mois';
   return (days / 365).toFixed(1).replace('.', ',') + ' an';
 }
 function dueLabel(card) {
+  if (card.suspended) return 'Suspendue';
   if (!card.lastReview) return 'Nouvelle';
   const diff = card.dueDate - Date.now();
   if (diff <= 0) return 'À réviser';
@@ -219,7 +271,7 @@ function toast(msg) {
    ============================================================ */
 const DB_NAME = 'AnkiLocalDB';
 const DB_VERSION = 1;
-const DEFAULT_SETTINGS = { dailyGoal: 20, newPerDay: 20 };
+const DEFAULT_SETTINGS = { dailyGoal: 20, newPerDay: 20, lastBackup: 0 };
 let db = null;
 
 function openDB() {
@@ -334,7 +386,7 @@ async function buildQueue(scope) {
     getSettings(),
     getAll('reviews', 'createdAt', IDBKeyRange.lowerBound(startOfDay())),
   ]);
-  const cards = due.filter(scopeFilter(scope, themes));
+  const cards = due.filter((c) => !c.suspended).filter(scopeFilter(scope, themes));
   const learned = cards.filter((c) => c.lastReview).sort((a, b) => a.dueDate - b.dueDate);
   const newToday = today.filter((r) => r.kind === 'review' && r.wasNew).length;
   const fresh = cards.filter((c) => !c.lastReview)
@@ -356,7 +408,9 @@ const EASY_BONUS = 1.3;
 const HARD_FACTOR = 1.2;
 
 function sm2(card, q) {
-  let ef = card.easeFactor + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
+  // Buttons 1..4 map to SM-2 grades 2..5, so "Bon" keeps EF stable instead of lowering it by 0.14 each time.
+  const g = q + 1;
+  let ef = card.easeFactor + (0.1 - (5 - g) * (0.08 + (5 - g) * 0.02));
   if (ef < 1.3) ef = 1.3;
   let interval;
   let repetitions = card.repetitions;
@@ -434,7 +488,17 @@ function sheet({ title, fields = [], submitLabel = 'Enregistrer', extra = [], te
   return new Promise((resolve) => {
     const wrap = document.createElement('div');
     wrap.className = 'backdrop';
+    const images = {};
+    let busy = false;
+    const preview = (name) => (images[name] ? imgHTML(images[name]) : '<span class="muted small">Aucune image</span>');
     const fieldHTML = (f) => {
+      if (f.type === 'image') {
+        images[f.name] = isImage(f.value) ? f.value : '';
+        return `<div class="field"><span>${esc(f.label)}</span><div class="imgpick" data-img="${f.name}">
+          <span data-prev>${preview(f.name)}</span>
+          <label class="btn">Choisir<input type="file" accept="image/*"></label>
+          <button type="button" class="btn" data-rm="${f.name}">Retirer</button></div></div>`;
+      }
       let input;
       if (f.type === 'textarea') input = `<textarea name="${f.name}" rows="${f.rows || 3}">${esc(f.value)}</textarea>`;
       else if (f.type === 'select') input = `<select name="${f.name}">${f.options.map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(f.value) ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
@@ -449,16 +513,28 @@ function sheet({ title, fields = [], submitLabel = 'Enregistrer', extra = [], te
     </form>`;
     const form = wrap.querySelector('form');
     const close = (v) => { wrap.remove(); resolve(v); };
+    const showPreview = (name) => { form.querySelector(`[data-img="${name}"] [data-prev]`).innerHTML = preview(name); };
+    form.addEventListener('change', async (e) => {
+      const box = e.target.closest('[data-img]');
+      if (!box || !e.target.files || !e.target.files[0]) return;
+      busy = true;
+      try { images[box.dataset.img] = await readImage(e.target.files[0]); showPreview(box.dataset.img); }
+      catch (err) { toast(err.message); }
+      finally { busy = false; e.target.value = ''; }
+    });
     const collect = () => {
+      if (busy) { toast('Image en cours de préparation…'); return null; }
       const fd = new FormData(form);
       const values = {};
-      fields.forEach((f) => { values[f.name] = String(fd.get(f.name) ?? '').trim(); });
+      fields.forEach((f) => { values[f.name] = f.type === 'image' ? images[f.name] : String(fd.get(f.name) ?? '').trim(); });
       const missing = fields.find((f) => f.required && !values[f.name]);
       if (missing) { toast(`« ${missing.label} » est obligatoire.`); return null; }
       return values;
     };
     wrap.addEventListener('click', (e) => {
       if (e.target === wrap || e.target.closest('[data-x]')) { close(null); return; }
+      const rm = e.target.closest('[data-rm]');
+      if (rm) { images[rm.dataset.rm] = ''; showPreview(rm.dataset.rm); return; }
       const b = e.target.closest('[data-e]');
       if (!b) return;
       const x = extra[+b.dataset.e];
@@ -481,14 +557,23 @@ async function editSubject(subject) {
   const now = Date.now();
   return putOne('subjects', subject ? { ...subject, name: r.values.name, updatedAt: now } : { name: r.values.name, createdAt: now, updatedAt: now });
 }
+const DIRECTIONS = [
+  { value: 'front', label: 'Recto → Verso' },
+  { value: 'back', label: 'Verso → Recto' },
+  { value: 'mixed', label: 'Les deux, au hasard' },
+];
 async function editTheme(subjectId, theme) {
   const r = await sheet({
-    title: theme ? 'Renommer le thème' : 'Nouveau thème',
-    fields: [{ name: 'name', label: 'Nom', value: theme ? theme.name : '', required: true }],
+    title: theme ? 'Modifier le thème' : 'Nouveau thème',
+    fields: [
+      { name: 'name', label: 'Nom', value: theme ? theme.name : '', required: true },
+      { name: 'direction', label: 'Sens de révision', type: 'select', value: (theme && theme.direction) || 'front', options: DIRECTIONS },
+    ],
   });
   if (!r) return null;
   const now = Date.now();
-  return putOne('themes', theme ? { ...theme, name: r.values.name, updatedAt: now } : { subjectId, name: r.values.name, createdAt: now, updatedAt: now });
+  const { name, direction } = r.values;
+  return putOne('themes', theme ? { ...theme, name, direction, updatedAt: now } : { subjectId, name, direction, createdAt: now, updatedAt: now });
 }
 
 /* Create (card = null, themeId given) or edit a card. Loops on "Enregistrer + suivante". */
@@ -502,10 +587,15 @@ async function editCard(card, themeId) {
         { name: 'front', label: 'Recto (question)', type: 'textarea', value: card ? card.front : '', required: true },
         { name: 'back', label: 'Verso (réponse)', type: 'textarea', value: card ? card.back : '', required: true },
         { name: 'notes', label: 'Notes (facultatif)', type: 'textarea', rows: 2, value: card ? card.notes : '' },
+        { name: 'image', label: 'Image affichée avec le recto (facultatif)', type: 'image', value: card ? card.image : '' },
         { name: 'themeId', label: 'Thème', type: 'select', value: card ? card.themeId : themeId, options: themeOptions },
       ],
       extra: card
-        ? [{ label: 'Réinitialiser la progression', action: 'reset' }, { label: 'Supprimer la carte', action: 'delete', danger: true }]
+        ? [
+          { label: card.suspended ? 'Réactiver la carte' : 'Suspendre la carte', action: 'suspend' },
+          { label: 'Réinitialiser la progression', action: 'reset' },
+          { label: 'Supprimer la carte', action: 'delete', danger: true },
+        ]
         : [{ label: 'Enregistrer + suivante', action: 'next', submit: true }],
     });
     if (!r) return;
@@ -514,10 +604,15 @@ async function editCard(card, themeId) {
       return;
     }
     if (r.action === 'reset') { await putOne('cards', resetProgress(card)); toast('Progression réinitialisée'); return; }
+    if (r.action === 'suspend') {
+      await putOne('cards', { ...card, suspended: !card.suspended });
+      toast(card.suspended ? 'Carte réactivée' : 'Carte suspendue : elle ne sera plus proposée en révision');
+      return;
+    }
     const v = r.values;
     const tid = Number(v.themeId);
-    if (card) await putOne('cards', { ...card, front: v.front, back: v.back, notes: v.notes, themeId: tid });
-    else await putOne('cards', newCard(tid, v.front, v.back, v.notes));
+    if (card) await putOne('cards', { ...card, front: v.front, back: v.back, notes: v.notes, image: v.image, themeId: tid });
+    else await putOne('cards', { ...newCard(tid, v.front, v.back, v.notes), image: v.image });
     toast('Carte enregistrée');
     if (r.action !== 'next') return;
     themeId = tid;
@@ -532,6 +627,7 @@ async function viewHome(guard) {
   ]);
   if (!guard()) return;
   setHeader('Aujourd’hui');
+  updateBadge(queue.length);
   if (!lib.cards.length) {
     setMain(`<div class="panel empty">
         <p><strong>Aucune carte pour l’instant.</strong></p>
@@ -545,7 +641,7 @@ async function viewHome(guard) {
   const now = Date.now();
   const subjOf = new Map(lib.themes.map((t) => [t.id, t.subjectId]));
   const dueBySubject = new Map();
-  lib.cards.forEach((c) => { if (c.dueDate <= now) { const s = subjOf.get(c.themeId); dueBySubject.set(s, (dueBySubject.get(s) || 0) + 1); } });
+  lib.cards.forEach((c) => { if (c.dueDate <= now && !c.suspended) { const s = subjOf.get(c.themeId); dueBySubject.set(s, (dueBySubject.get(s) || 0) + 1); } });
   setMain(`
     <div class="flash" style="${stack(queue.length)};min-height:220px;margin-bottom:${queue.length > 1 ? 40 : 16}px" data-a="${queue.length ? 'start' : ''}">
       <div class="crumb">Pile du jour</div>
@@ -553,6 +649,10 @@ async function viewHome(guard) {
       <div class="notes">${queue.length ? `${plural(learned, 'à revoir', 'à revoir')}, ${plural(fresh, 'nouvelle', 'nouvelles')}` : 'Tout est révisé pour aujourd’hui.'}</div>
     </div>
     <button class="btn primary block" style="margin-bottom:16px" data-a="start" ${queue.length ? '' : 'disabled'}>Commencer la révision</button>
+    ${now - settings.lastBackup > 7 * DAY ? `<div class="panel">
+      <p style="margin:0 0 10px"><strong>${settings.lastBackup ? `Dernière sauvegarde il y a ${plural(Math.floor((now - settings.lastBackup) / DAY), 'jour', 'jours')}.` : 'Aucune sauvegarde pour l’instant.'}</strong>
+      <span class="muted">iOS peut effacer les données d’une web app peu utilisée.</span></p>
+      <button class="btn block" data-a="backup">Exporter une sauvegarde</button></div>` : ''}
     <div class="grid">
       <div class="panel"><div class="muted small">Objectif du jour</div><div class="stat-num">${today.length}/${goal}</div><div class="bar"><div style="width:${pct}%"></div></div></div>
       <div class="panel"><div class="muted small">Série</div><div class="stat-num">${plural(streakOf(reviews), 'jour', 'jours')}</div></div>
@@ -565,6 +665,7 @@ async function viewHome(guard) {
         <span class="chev">›</span>
       </button>`).join('')}</div>`, {
     start: () => startReview(null, 'Révision'),
+    backup: exportBackup,
     subject: (d) => { const s = lib.subjectById.get(+d.id); startReview({ subjectId: s.id }, s.name); },
   });
 }
@@ -578,56 +679,127 @@ function streakOf(reviews) {
   return n;
 }
 
-/* ---------- Review session ---------- */
+/* ---------- Review session ----------
+   Cards rated "À revoir" come back at the end of the session (relearn list, session only:
+   their schedule was already set by SM-2). The last answer can be undone once. */
 async function startReview(scope, label) {
-  state.review = { scope, label, done: 0, revealed: false, current: null, remaining: 0 };
+  state.review = { scope, label, done: 0, revealed: false, current: null, relearning: false, remaining: 0, relearn: [], undo: null, force: null };
   await render();
 }
 async function viewReview(guard) {
   const rv = state.review;
   const [{ queue }, lib] = await Promise.all([buildQueue(rv.scope), loadLibrary()]);
   if (!guard()) return;
-  rv.current = queue[0] || null;
-  rv.remaining = queue.length;
-  setHeader(rv.label, { back: { label: 'Terminer', fn: endReview }, actions: rv.current ? [{ label: String(rv.remaining), aria: 'Cartes restantes', fn: () => {} }] : [] });
-  if (!rv.current) {
-    setMain(`<div class="panel empty"><div class="big">✓</div><p><strong>Session terminée</strong></p><p>${plural(rv.done, 'carte révisée', 'cartes révisées')}.</p>
-      <button class="btn primary block" data-a="end">Retour</button></div>`, { end: endReview });
+  const byId = new Map(lib.cards.map((c) => [c.id, c]));
+  rv.relearn = rv.relearn.filter((id) => byId.has(id) && !byId.get(id).suspended);
+  let c = null;
+  let relearning = false;
+  if (rv.force && byId.has(rv.force.id) && !byId.get(rv.force.id).suspended) { c = byId.get(rv.force.id); relearning = rv.force.relearning; }
+  else if (queue.length) c = queue[0];
+  else if (rv.relearn.length) { c = byId.get(rv.relearn[0]); relearning = true; }
+  rv.current = c;
+  rv.relearning = relearning;
+  rv.remaining = queue.length + rv.relearn.length;
+  setHeader(rv.label, { back: { label: 'Terminer', fn: endReview }, actions: c ? [{ label: String(rv.remaining), aria: 'Cartes restantes', fn: () => {} }] : [] });
+  const undoLink = rv.undo ? '<button class="link small" data-a="undo">Annuler la dernière réponse</button>' : '';
+  if (!c) {
+    setMain(`<div class="panel empty"><div class="big">✓</div><p><strong>Session terminée</strong></p><p>${plural(rv.done, 'réponse', 'réponses')}.</p>
+      <button class="btn primary block" data-a="end">Retour</button><div style="margin-top:8px">${undoLink}</div></div>`, { end: endReview, undo: undoRating });
     return;
   }
-  const c = rv.current;
   const theme = lib.themeById.get(c.themeId);
   const crumb = theme ? (lib.subjectById.get(theme.subjectId)?.name || '') + ' › ' + theme.name : '';
-  const answerHTML = rv.revealed
-    ? `<hr><div class="a">${esc(c.back)}</div>${c.notes ? `<div class="notes">${esc(c.notes)}</div>` : ''}`
-    : '';
+  // Direction is drawn once per showing (card id + answer count), so re-renders keep it stable.
+  const key = c.id + ':' + rv.done;
+  if (rv.dirKey !== key) {
+    const d = (theme && theme.direction) || 'front';
+    rv.dirKey = key;
+    rv.backward = d === 'back' || (d === 'mixed' && Math.random() < 0.5);
+  }
+  const qSide = rv.backward ? 'back' : 'front';
+  const aSide = rv.backward ? 'front' : 'back';
+  const face = (side, cls) => `<div class="${cls}">${esc(c[side])}</div>${side === 'front' ? imgHTML(c.image) : ''}${sayBtn(side)}`;
+  const answerHTML = rv.revealed ? `<hr>${face(aSide, 'a')}${c.notes ? `<div class="notes">${esc(c.notes)}</div>` : ''}` : '';
+  const ratings = relearning
+    ? [{ q: 1, label: 'À revoir', sub: 'encore' }, { q: 3, label: 'Bon', sub: fmtInterval(Math.max(1, Math.ceil((c.dueDate - Date.now()) / DAY))) }]
+    : RATINGS.map((r) => ({ ...r, sub: fmtInterval(sm2(c, r.q).interval) }));
   const controls = rv.revealed
-    ? `<div class="answers">${RATINGS.map((r) => `<button class="r${r.q}" data-a="rate" data-q="${r.q}">${r.label}<small>${fmtInterval(sm2(c, r.q).interval)}</small></button>`).join('')}</div>`
+    ? `<div class="answers"${relearning ? ' style="grid-template-columns:1fr 1fr"' : ''}>${ratings.map((r) => `<button class="r${r.q}" data-a="rate" data-q="${r.q}">${r.label}<small>${r.sub}</small></button>`).join('')}</div>
+       <p class="muted small center" style="margin:8px 0 0">Glisse la fiche à gauche pour « À revoir », à droite pour « Bon ».</p>`
     : `<button class="btn primary block" data-a="reveal" style="min-height:64px">Afficher la réponse</button>`;
+  const tag = relearning ? ', à revoir' : c.lastReview ? '' : ', nouvelle';
   const flip = rv.flip;
   rv.flip = false; // animate only on the render right after the tap
-  setMain(`<div class="flash${flip ? ' flip' : ''}" style="${stack(rv.remaining)}" data-a="reveal"><div class="crumb">${esc(crumb)}${c.lastReview ? '' : ', nouvelle'}</div><div class="q">${esc(c.front)}</div>${answerHTML}</div>${controls}
-    <div style="text-align:center;margin-top:12px"><button class="link small" data-a="edit">Modifier la carte</button></div>`, {
+  const main = setMain(`<div class="flash${flip ? ' flip' : ''}${rv.revealed ? ' swipe' : ''}" style="${stack(rv.remaining)}" data-a="reveal"><div class="crumb">${esc(crumb)}${tag}</div>${face(qSide, 'q')}${answerHTML}</div>${controls}
+    <div class="center" style="margin-top:12px"><button class="link small" data-a="edit">Modifier la carte</button>${undoLink}</div>`, {
     reveal: () => { if (!rv.revealed) { rv.revealed = true; rv.flip = true; render(); } },
     rate: (d) => rateCard(+d.q),
+    say: (d) => speak(c[d.side]),
+    undo: undoRating,
     edit: async () => { await editCard(c); render(); },
   });
+  if (rv.revealed) attachSwipe(main.querySelector('.flash'), (dir) => rateCard(dir < 0 ? 1 : 3));
+}
+/* Horizontal swipe on an element: follows the finger, calls done(-1|1) past 90 px, else snaps back. */
+function attachSwipe(el, done) {
+  let x0 = null;
+  let dx = 0;
+  el.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    x0 = e.clientX; dx = 0; el.style.transition = 'none';
+    try { el.setPointerCapture(e.pointerId); } catch (_) { /* synthetic pointer */ }
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (x0 === null) return;
+    dx = e.clientX - x0;
+    el.style.transform = `translateX(${dx}px) rotate(${dx / 25}deg)`;
+  });
+  const end = () => {
+    if (x0 === null) return;
+    x0 = null;
+    if (Math.abs(dx) > 90) { done(Math.sign(dx)); return; }
+    el.style.transition = 'transform .2s'; el.style.transform = '';
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
 }
 async function rateCard(q) {
   const rv = state.review;
   const card = rv.current;
-  if (!card) return;
+  if (!card || !rv.revealed) return;
   rv.current = null; // ignore double taps while writing
   const now = Date.now();
-  const wasNew = !card.lastReview;
-  const updated = { ...card, ...sm2(card, q), lastReview: now, lapses: (card.lapses || 0) + (q === 1 ? 1 : 0) };
+  const relearning = rv.relearning;
+  const undo = { card, relearning, relearn: rv.relearn.slice(), reviewId: null };
+  // A relearn answer is logged but does not reschedule: the card keeps the date SM-2 gave it.
+  const updated = relearning ? null : { ...card, ...sm2(card, q), lastReview: now, lapses: (card.lapses || 0) + (q === 1 ? 1 : 0) };
   await tx(['cards', 'reviews'], 'readwrite', (t) => {
-    onReq(t.objectStore('cards').put(updated));
-    onReq(t.objectStore('reviews').add({ cardId: card.id, kind: 'review', rating: q, correct: q > 1, wasNew, createdAt: now }));
+    if (updated) onReq(t.objectStore('cards').put(updated));
+    onReq(t.objectStore('reviews').add({ cardId: card.id, kind: 'review', rating: q, correct: q > 1, wasNew: !relearning && !card.lastReview, createdAt: now }), (id) => { undo.reviewId = id; });
   });
+  rv.relearn = rv.relearn.filter((id) => id !== card.id);
+  if (q === 1) rv.relearn.push(card.id);
+  rv.undo = undo;
+  rv.force = null;
   rv.done++;
   rv.revealed = false;
   await render(); // queue is rebuilt from IndexedDB
+}
+async function undoRating() {
+  const rv = state.review;
+  const u = rv.undo;
+  if (!u) return;
+  rv.undo = null;
+  await tx(['cards', 'reviews'], 'readwrite', (t) => {
+    if (!u.relearning) onReq(t.objectStore('cards').put(u.card));
+    if (u.reviewId != null) onReq(t.objectStore('reviews').delete(u.reviewId));
+  });
+  rv.relearn = u.relearn;
+  rv.done--;
+  rv.force = { id: u.card.id, relearning: u.relearning };
+  rv.revealed = true;
+  toast('Réponse annulée');
+  await render();
 }
 function endReview() { state.review = null; render(); }
 
@@ -719,10 +891,10 @@ function libTheme(lib, subject, theme) {
     <div class="btn-row">
       <button class="btn primary" data-a="review">Réviser</button>
       <button class="btn" data-a="quiz">Quiz</button>
-      <button class="btn" data-a="rename">Renommer</button>
+      <button class="btn" data-a="rename">Modifier</button>
       <button class="btn danger" data-a="delete">Supprimer</button>
     </div>
-    <div class="section-title">${plural(cards.length, 'carte', 'cartes')}</div>
+    <div class="section-title">${plural(cards.length, 'carte', 'cartes')}, ${DIRECTIONS.find((d) => d.value === (theme.direction || 'front')).label.toLowerCase()}</div>
     ${cards.length ? `<div class="list">${cards.map((c) => cardRow(c, lib, false)).join('')}</div>`
       : `<div class="panel empty"><p>Aucune carte dans ce thème.</p><button class="btn primary" data-a="add">Ajouter une carte</button></div>`}`, {
     card: openCard(lib),
@@ -753,11 +925,12 @@ async function viewQuizSetup(guard) {
       <label class="field"><span>Cartes</span><select id="qz-scope"><option value="all">Toutes les cartes</option>${groups}</select></label>
       <label class="field"><span>Nombre de questions</span><select id="qz-count"><option>10</option><option>20</option><option>50</option></select></label>
       <label class="field"><span>Sens</span><select id="qz-dir"><option value="front">Recto → Verso</option><option value="back">Verso → Recto</option></select></label>
-      <p class="muted small">Le quiz propose 4 réponses par question. Il n’influence pas la planification des révisions.</p>
+      <label class="field"><span>Réponse</span><select id="qz-mode"><option value="choice">4 choix</option><option value="type">Taper la réponse</option></select></label>
+      <p class="muted small">Le quiz n’influence pas la planification des révisions.</p>
       <button class="btn primary block" data-a="start">Lancer le quiz</button>
     </div>`, {
     start: () => {
-      const cfg = { scope: $('#qz-scope').value, count: +$('#qz-count').value, dir: $('#qz-dir').value };
+      const cfg = { scope: $('#qz-scope').value, count: +$('#qz-count').value, dir: $('#qz-dir').value, mode: $('#qz-mode').value };
       state.quizScope = cfg.scope;
       startQuiz(cfg, lib);
     },
@@ -768,13 +941,14 @@ function startQuiz(cfg, lib, onlyIds) {
   const subjOf = new Map(lib.themes.map((t) => [t.id, t.subjectId]));
   const [kind, idStr] = cfg.scope.split(':');
   const id = Number(idStr);
-  let pool = lib.cards.filter((c) => kind === 't' ? c.themeId === id : kind === 's' ? subjOf.get(c.themeId) === id : true);
+  let pool = lib.cards.filter((c) => !c.suspended).filter((c) => kind === 't' ? c.themeId === id : kind === 's' ? subjOf.get(c.themeId) === id : true);
   if (onlyIds) pool = pool.filter((c) => onlyIds.includes(c.id));
   const ask = (c) => (cfg.dir === 'back' ? c.back : c.front);
   const answer = (c) => (cfg.dir === 'back' ? c.front : c.back);
   const questions = [];
   for (const card of shuffle(pool.slice()).slice(0, cfg.count)) {
     const expected = answer(card);
+    if (cfg.mode === 'type') { questions.push({ cardId: card.id, prompt: ask(card), expected, choices: null }); continue; }
     const seen = new Set([norm(expected)]);
     const distractors = [];
     const tiers = [
@@ -818,19 +992,41 @@ async function viewQuizSession(guard) {
   const q = qz.questions[qz.i];
   const picked = qz.picked;
   setHeader(`Question ${qz.i + 1}/${qz.questions.length}`, { back: { label: 'Quitter', fn: quit } });
-  setMain(`<div class="flash" style="min-height:160px"><div class="q">${esc(q.prompt)}</div></div>
-    <div class="choices">${q.choices.map((c, i) => {
+  const last = qz.answers[qz.answers.length - 1];
+  let body;
+  if (q.choices) {
+    body = `<div class="choices">${q.choices.map((c, i) => {
       let cls = '';
       if (picked !== null) { if (c === q.expected) cls = 'ok'; else if (i === picked) cls = 'bad'; }
       return `<button class="choice ${cls}" data-a="pick" data-i="${i}" ${picked !== null ? 'disabled' : ''}>${esc(c)}</button>`;
-    }).join('')}</div>
+    }).join('')}</div>`;
+  } else if (picked === null) {
+    body = `<form id="qz-type" class="choices"><input class="search" id="qz-input" style="margin:0" placeholder="Ta réponse" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button class="btn primary block">Valider</button></form>`;
+  } else {
+    body = `<div class="choices"><div class="choice ${last.correct ? 'ok' : 'bad'}">${esc(last.typed || '(vide)')}</div>
+      ${last.correct ? '' : `<div class="choice ok">${esc(q.expected)}</div><button class="link small" data-a="override">J’avais bon, compter juste</button>`}</div>`;
+  }
+  const record = async (correct, extra) => {
+    const a = { q, correct, ...extra };
+    qz.answers.push(a);
+    a.review = { cardId: q.cardId, kind: 'quiz', rating: null, correct, wasNew: false, createdAt: Date.now() };
+    a.review.id = await putOne('reviews', a.review);
+    render();
+  };
+  const main = setMain(`<div class="flash" style="min-height:160px"><div class="q">${esc(q.prompt)}</div>${sayBtn('prompt')}</div>
+    ${body}
     ${picked !== null ? `<button class="btn primary block" data-a="next">${qz.i + 1 < qz.questions.length ? 'Suivant' : 'Voir le résultat'}</button>` : ''}`, {
-    pick: async (d) => {
+    say: () => speak(q.prompt),
+    pick: (d) => {
       if (qz.picked !== null) return;
       qz.picked = +d.i;
-      const correct = q.choices[qz.picked] === q.expected;
-      qz.answers.push({ q, correct });
-      await putOne('reviews', { cardId: q.cardId, kind: 'quiz', rating: null, correct, wasNew: false, createdAt: Date.now() });
+      record(q.choices[qz.picked] === q.expected);
+    },
+    override: async () => {
+      if (!last.review || last.review.id == null) return;
+      last.correct = true;
+      await putOne('reviews', { ...last.review, correct: true });
       render();
     },
     next: () => {
@@ -839,6 +1035,24 @@ async function viewQuizSession(guard) {
       render();
     },
   });
+  const form = main.querySelector('#qz-type');
+  if (form) {
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      if (qz.picked !== null) return;
+      const typed = main.querySelector('#qz-input').value.trim();
+      qz.picked = 0;
+      record(typedMatches(typed, q.expected), { typed });
+    };
+    main.querySelector('#qz-input').focus();
+  }
+}
+/* Typed answer check: ignores case, accents, punctuation and spacing; "a, b / c" accepts any part. */
+function typedMatches(typed, expected) {
+  const loose = (s) => norm(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const t = loose(typed);
+  if (!t) return false;
+  return [expected, ...expected.split(/[,;/]/)].some((x) => loose(x) === t);
 }
 
 /* ---------- Statistics ---------- */
@@ -848,7 +1062,8 @@ async function viewStats(guard) {
   setHeader('Statistiques');
   const now = Date.now();
   const cards = lib.cards;
-  const due = cards.filter((c) => c.dueDate <= now).length;
+  const due = cards.filter((c) => c.dueDate <= now && !c.suspended).length;
+  const suspended = cards.filter((c) => c.suspended).length;
   const fresh = cards.filter((c) => !c.lastReview).length;
   const mastered = cards.filter((c) => c.interval >= 21).length;
   const today = reviews.filter((r) => r.createdAt >= startOfDay());
@@ -867,13 +1082,22 @@ async function viewStats(guard) {
     const e = new Date(d); e.setDate(e.getDate() + 1);
     forecast.push({
       label: i === 0 ? 'auj.' : d.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', ''),
-      n: cards.filter((c) => c.lastReview && (i === 0 ? c.dueDate < e.getTime() : c.dueDate >= d.getTime() && c.dueDate < e.getTime())).length,
+      n: cards.filter((c) => c.lastReview && !c.suspended && (i === 0 ? c.dueDate < e.getTime() : c.dueDate >= d.getTime() && c.dueDate < e.getTime())).length,
     });
   }
   const chart = (data) => {
     const max = Math.max(1, ...data.map((x) => x.n));
     return `<div class="chart">${data.map((x) => `<div class="col"><span class="val">${x.n || ''}</span><div class="fill" style="height:${Math.round((x.n / max) * 80)}%"></div><span class="lbl">${esc(x.label)}</span></div>`).join('')}</div>`;
   };
+  // Activity calendar: 17 weeks, one column per week (Monday on top), ending with the current week.
+  const perDay = new Map();
+  reviews.forEach((r) => { const k = dayKey(r.createdAt); perDay.set(k, (perDay.get(k) || 0) + 1); });
+  const today0 = new Date(); today0.setHours(12, 0, 0, 0);
+  const d0 = new Date(today0); d0.setDate(d0.getDate() - ((today0.getDay() + 6) % 7) - 16 * 7);
+  const heat = [];
+  for (const d = d0; d <= today0; d.setDate(d.getDate() + 1)) heat.push({ n: perDay.get(dayKey(d.getTime())) || 0, label: d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) });
+  const heatMax = Math.max(1, ...heat.map((h) => h.n));
+  const heatHTML = `<div class="heat" role="img" aria-label="Activité des 17 dernières semaines">${heat.map((h) => `<i class="l${h.n ? Math.ceil((4 * h.n) / heatMax) : 0}" title="${esc(h.label)} : ${h.n}"></i>`).join('')}</div>`;
   const difficult = cards.filter((c) => (c.lapses || 0) >= 2 || (c.lastReview && c.easeFactor <= 1.5))
     .sort((a, b) => (b.lapses || 0) - (a.lapses || 0) || a.easeFactor - b.easeFactor).slice(0, 10);
 
@@ -886,7 +1110,8 @@ async function viewStats(guard) {
       <div class="panel"><div class="muted small">Aujourd’hui</div><div class="stat-num">${today.length}/${settings.dailyGoal}</div></div>
       <div class="panel"><div class="muted small">Réussite 7 jours</div><div class="stat-num">${rate}</div></div>
     </div>
-    <div class="panel"><div class="muted small">Série actuelle : <strong>${plural(streakOf(reviews), 'jour', 'jours')}</strong></div></div>
+    <div class="panel"><div class="muted small">Série actuelle : <strong>${plural(streakOf(reviews), 'jour', 'jours')}</strong>${suspended ? `, ${plural(suspended, 'carte suspendue', 'cartes suspendues')}` : ''}</div></div>
+    <div class="panel"><div class="muted small">Activité, 17 dernières semaines</div>${heatHTML}</div>
     <div class="panel"><div class="muted small">Réponses — 14 derniers jours</div>${chart(days)}</div>
     <div class="panel"><div class="muted small">Révisions prévues — 7 prochains jours</div>${chart(forecast)}</div>
     <div class="section-title">Cartes difficiles</div>
@@ -908,9 +1133,11 @@ async function viewSettings(guard) {
       <label class="field"><span>Objectif quotidien (réponses)</span><input type="number" inputmode="numeric" min="1" id="goal" value="${settings.dailyGoal}"></label>
       <label class="field" style="margin:0"><span>Nouvelles cartes par jour</span><input type="number" inputmode="numeric" min="0" id="newPerDay" value="${settings.newPerDay}"></label>
     </div>
+    ${'setAppBadge' in navigator && 'Notification' in window ? `<div class="list"><button class="row" data-a="badge"><div class="grow"><div class="title">Pastille sur l’icône</div>
+      <div class="sub">${Notification.permission === 'granted' ? 'Activée : nombre de cartes à réviser, mis à jour à chaque ouverture' : Notification.permission === 'denied' ? 'Refusée : à réactiver dans Réglages iOS › Notifications' : 'Touche pour autoriser'}</div></div></button></div>` : ''}
     <div class="section-title">Sauvegarde</div>
     <div class="list">
-      <button class="row" data-a="exportJson"><div class="grow"><div class="title">Exporter une sauvegarde</div><div class="sub">Fichier JSON complet (cartes, progression, historique)</div></div></button>
+      <button class="row" data-a="exportJson"><div class="grow"><div class="title">Exporter une sauvegarde</div><div class="sub">Dernière : ${settings.lastBackup ? new Date(settings.lastBackup).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : 'jamais'}. Fichier JSON complet.</div></div></button>
       <button class="row" data-a="importJson"><div class="grow"><div class="title">Importer une sauvegarde</div><div class="sub">Ajoute le contenu du fichier aux données actuelles</div></div></button>
     </div>
     <div class="section-title">CSV</div>
@@ -929,6 +1156,8 @@ async function viewSettings(guard) {
     importCsv: importCSVFile,
     exportCsv: exportCSV,
     wipe: wipeAll,
+    // iOS only shows web app badges once notifications are allowed.
+    badge: async () => { try { await Notification.requestPermission(); } catch (_) { /* unsupported */ } render(); },
   });
   const saveNum = (key, min) => async (e) => {
     const v = Math.max(min, Math.floor(Number(e.target.value) || 0));
@@ -964,13 +1193,14 @@ function stamp() {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
+/* Shares (iOS sheet) or downloads a file. Resolves false if the user cancelled the share sheet. */
 async function saveFile(name, text, type) {
   const blob = new Blob([text], { type });
   try {
     const file = new File([blob], name, { type });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; }
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return true; }
   } catch (e) {
-    if (e && e.name === 'AbortError') return;
+    if (e && e.name === 'AbortError') return false;
   }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -978,6 +1208,7 @@ async function saveFile(name, text, type) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  return true;
 }
 function pickTextFile(accept) {
   return new Promise((resolve) => {
@@ -998,7 +1229,10 @@ function pickTextFile(accept) {
 async function exportBackup() {
   const [subjects, themes, cards, reviews, settings] = await Promise.all(['subjects', 'themes', 'cards', 'reviews', 'settings'].map((s) => getAll(s)));
   const data = { app: 'anki-local', version: 1, exportedAt: new Date().toISOString(), subjects, themes, cards, reviews, settings };
-  await saveFile(`anki_backup_${stamp()}.json`, JSON.stringify(data), 'application/json');
+  if (!(await saveFile(`anki_backup_${stamp()}.json`, JSON.stringify(data), 'application/json'))) return;
+  await setSetting('lastBackup', Date.now());
+  toast('Sauvegarde exportée');
+  render();
 }
 
 /* Adds every item of `items` to `store` (ids stripped), then calls done(oldId -> newId map). */
@@ -1042,7 +1276,7 @@ async function importBackupData(data) {
   let added = 0;
   await tx(['subjects', 'themes', 'cards', 'reviews'], 'readwrite', (t) => {
     addAll(t, 'subjects', subjects, (s) => (s.name ? { ...s, createdAt: s.createdAt || now, updatedAt: now } : null), (subjMap) => {
-      addAll(t, 'themes', themes, (th) => (subjMap.has(th.subjectId) && th.name ? { ...th, subjectId: subjMap.get(th.subjectId), createdAt: th.createdAt || now, updatedAt: now } : null), (themeMap) => {
+      addAll(t, 'themes', themes, (th) => (subjMap.has(th.subjectId) && th.name ? { ...th, direction: DIRECTIONS.some((d) => d.value === th.direction) ? th.direction : 'front', subjectId: subjMap.get(th.subjectId), createdAt: th.createdAt || now, updatedAt: now } : null), (themeMap) => {
         addAll(t, 'cards', data.cards, (c) => {
           if (!themeMap.has(c.themeId) || !c.front || !c.back) return null;
           added++;
@@ -1056,6 +1290,8 @@ async function importBackupData(data) {
             createdAt: Number(c.createdAt) || now,
             lastReview: c.lastReview ? Number(c.lastReview) : (Number(c.repetitions) > 0 ? now : null),
             lapses: Number(c.lapses) || 0,
+            suspended: !!c.suspended,
+            image: isImage(c.image) ? c.image : '',
           };
         }, (cardMap) => {
           addAll(t, 'reviews', reviews, (r) => (cardMap.has(r.cardId) ? { ...r, cardId: cardMap.get(r.cardId) } : null), () => {});
