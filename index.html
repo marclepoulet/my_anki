@@ -58,6 +58,7 @@ main {
   display: flex; background: var(--surface); border-top: 1px solid var(--line);
   padding: 4px calc(env(safe-area-inset-right) + 4px) max(6px, env(safe-area-inset-bottom)) calc(env(safe-area-inset-left) + 4px);
 }
+.short-vp .tabs { padding-bottom: 6px; }
 .tabs button {
   flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
   border: 0; background: none; padding: 6px 0; font-size: 11px; color: var(--muted);
@@ -1607,13 +1608,12 @@ document.getElementById('tabs').addEventListener('click', (e) => {
 });
 
 /* iOS home-screen apps with a translucent status bar get a viewport shorter than the screen by about the
-   status bar height, leaving a strip at the bottom. Stretch the app to the real screen height in that case.
-   shortcut: portrait only (iOS reports screen size in portrait); landscape keeps the normal layout. */
+   status bar height. Content below it is not painted (stretching #app hid the tab labels), only the page
+   background, which matches the tab bar. That strip already covers the home indicator, so drop the tab
+   bar's bottom inset there. shortcut: portrait only (iOS reports screen size in portrait). */
 function fitScreen() {
-  const app = $('#app');
-  const short = navigator.standalone && matchMedia('(orientation: portrait)').matches && screen.height > innerHeight;
-  app.style.bottom = short ? 'auto' : '';
-  app.style.height = short ? screen.height + 'px' : '';
+  const short = navigator.standalone && matchMedia('(orientation: portrait)').matches && screen.height - innerHeight > 20;
+  document.documentElement.classList.toggle('short-vp', !!short);
 }
 
 (async function boot() {
